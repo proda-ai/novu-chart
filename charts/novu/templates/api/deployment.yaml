@@ -37,6 +37,8 @@ spec:
               value: "{{ .Values.global.env.disableUserRegistration }}"
             - name: FRONT_BASE_URL
               value: "{{ .Values.global.env.frontBaseUrl }}"
+            - name: PORT
+              value: "{{ .Values.api.port }}"
             - name: REDIS_PASSWORD
               valueFrom:
                 secretKeyRef:
@@ -53,14 +55,15 @@ spec:
             httpGet:
               path: /v1/health-check
               port: 3000
-            initialDelaySeconds: 30
+            initialDelaySeconds: 180
             periodSeconds: 10
             timeoutSeconds: 5
           readinessProbe:
             httpGet:
               path: /v1/health-check
               port: 3000
-            initialDelaySeconds: 5
+            initialDelaySeconds: 30
             periodSeconds: 10
             timeoutSeconds: 5
+            failureThreshold: 12
       restartPolicy: Always
