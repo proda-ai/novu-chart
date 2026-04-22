@@ -23,8 +23,8 @@ web:
   port: 4200
   resources: { }
   widgets:
-    embedPath: http://localhost:4701/embed.umd.min.js
-    url: http://localhost:4500
+    embedPath: ""
+    url: ""
 
 api:
   replicaCount: 1

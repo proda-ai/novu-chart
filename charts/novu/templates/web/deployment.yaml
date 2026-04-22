@@ -32,7 +32,9 @@ spec:
             - name: REACT_APP_IS_SELF_HOSTED
               value: "true"
             - name: REACT_APP_WS_URL
-              value: "http://{{ include "novu.ws.fullname" . }}:{{ .Values.ws.port }}"
+              value: {{ if .Values.ingress.enabled }}"wss://ws.{{ .Values.ingress.host }}"{{ else }}"http://{{ include "novu.ws.fullname" . }}:{{ .Values.ws.port }}"{{ end }}
+            - name: REACT_APP_WEBHOOK_URL
+              value: {{ if .Values.ingress.enabled }}"https://api.{{ .Values.ingress.host }}"{{ else }}"http://{{ include "novu.api.fullname" . }}:{{ .Values.api.port }}"{{ end }}
           livenessProbe:
             httpGet:
               path: /
