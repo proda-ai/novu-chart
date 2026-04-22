@@ -58,6 +58,8 @@ ws:
 
 global:
   imagePullSecrets: [ ]
+  security:
+    allowInsecureImages: true
   env:
     nodeEnv: production
     mongodb:
@@ -85,10 +87,16 @@ global:
 
 redis:
   enabled: true
+  image:
+    registry: docker.io
+    repository: bitnamilegacy/redis
   replica:
     replicaCount: 1
 
 mongodb:
   enabled: true
+  image:
+    registry: docker.io
+    repository: bitnamilegacy/mongodb
   serviceBindings:
     enabled: true
