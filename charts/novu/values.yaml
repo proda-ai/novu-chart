@@ -65,6 +65,7 @@ global:
     mongodb:
       maxPoolSize: 200
       minPoolSize: 75
+      autoCreateIndexes: true
     secret:
       novuSecretKey: your-secret
       jwtSecret: your-secret

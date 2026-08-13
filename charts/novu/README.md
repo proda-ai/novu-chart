@@ -46,6 +46,7 @@ The following table lists the most commonly used parameters. For the full list, 
 | `worker.replicaCount`            | 🏭 Number of worker pods         | `1`        |
 | `ws.replicaCount`                | 🌐 Number of WebSocket pods      | `1`        |
 | `global.env.mongodb.maxPoolSize` | 💾 MongoDB connection pool size  | `200`      |
+| `global.env.mongodb.autoCreateIndexes` | 🔍 Build MongoDB indexes on boot | `true` |
 | `global.env.secret.jwtSecret`    | 🔑 JWT signing secret            | *required* |
 | `ingress.enabled`                | 🚪 Enable ingress                | `false`    |
 
