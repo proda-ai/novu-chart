@@ -9,6 +9,10 @@ data:
   NODE_ENV: {{ .Values.global.env.nodeEnv | quote }}
   MONGO_URL: "mongodb://{{ include "mongodb.fullname" . }}-mongodb.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.mongodb.service.ports.mongodb }}/novu"
   MONGO_MAX_POOL_SIZE: {{ .Values.global.env.mongodb.maxPoolSize | quote }}
+  # Novu's DalService sets mongoose `autoIndex` from this var and defaults it to
+  # false, so leaving it unset means none of the schema indexes are ever built
+  # and every query degrades to a collection scan.
+  MONGO_AUTO_CREATE_INDEXES: {{ .Values.global.env.mongodb.autoCreateIndexes | quote }}
   REDIS_HOST: "{{ include "redis.fullname" . }}-master.{{ .Release.Namespace }}.svc.cluster.local"
   REDIS_PORT: {{ .Values.redis.master.service.ports.redis | quote }}
   REDIS_CACHE_SERVICE_HOST: "{{ include "redis.fullname" . }}-master"

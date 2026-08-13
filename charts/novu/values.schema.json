@@ -218,6 +218,9 @@
                 },
                 "minPoolSize": {
                   "type": "integer"
+                },
+                "autoCreateIndexes": {
+                  "type": "boolean"
                 }
               }
             },
