@@ -1,51 +1,96 @@
 {{- if .Values.ingress.enabled -}}
 {{- $fullName := include "novu.fullname" . -}}
+{{- $svcPortApi := .Values.api.port -}}
+{{- $svcPortWeb := .Values.web.port -}}
+{{- $svcPortWs := .Values.ws.port -}}
 {{- if and .Values.ingress.className (not (semverCompare ">=1.18-0" .Capabilities.KubeVersion.GitVersion)) }}
   {{- if not (hasKey .Values.ingress.annotations "kubernetes.io/ingress.class") }}
   {{- $_ := set .Values.ingress.annotations "kubernetes.io/ingress.class" .Values.ingress.className}}
   {{- end }}
 {{- end }}
-{{- range $component := list "api" "web" "ws" }}
-{{- $overrides := get $.Values.ingress $component | default dict }}
-{{- $annotations := mustMergeOverwrite (deepCopy ($.Values.ingress.annotations | default dict)) ($overrides.annotations | default dict) }}
-{{- $tlsOverrides := $overrides.tls | default dict }}
----
-{{- if semverCompare ">=1.19-0" $.Capabilities.KubeVersion.GitVersion }}
-apiVersion: networking.k8s.io/v1
-{{- else if semverCompare ">=1.14-0" $.Capabilities.KubeVersion.GitVersion }}
-apiVersion: networking.k8s.io/v1beta1
-{{- else }}
-apiVersion: extensions/v1beta1
+{{- $web := .Values.ingress.web | default dict }}
+{{- $webAnnotations := mustMergeOverwrite (deepCopy (.Values.ingress.annotations | default dict)) ($web.annotations | default dict) }}
+{{- $webTls := $web.tls | default dict }}
+{{- $apiVersion := "extensions/v1beta1" }}
+{{- if semverCompare ">=1.19-0" .Capabilities.KubeVersion.GitVersion }}
+{{- $apiVersion = "networking.k8s.io/v1" }}
+{{- else if semverCompare ">=1.14-0" .Capabilities.KubeVersion.GitVersion }}
+{{- $apiVersion = "networking.k8s.io/v1beta1" }}
 {{- end }}
+apiVersion: {{ $apiVersion }}
 kind: Ingress
 metadata:
-  name: {{ $fullName }}-{{ $component }}
+  name: {{ $fullName }}
   labels:
-    {{- include "novu.labels" $ | nindent 4 }}
-  {{- with $annotations }}
+    {{- include "novu.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
   annotations:
     {{- toYaml . | nindent 4 }}
   {{- end }}
 spec:
-  {{- if and $.Values.ingress.className (semverCompare ">=1.18-0" $.Capabilities.KubeVersion.GitVersion) }}
-  ingressClassName: {{ $.Values.ingress.className }}
+  {{- if and .Values.ingress.className (semverCompare ">=1.18-0" .Capabilities.KubeVersion.GitVersion) }}
+  ingressClassName: {{ .Values.ingress.className }}
   {{- end }}
-  {{- if $.Values.ingress.tls }}
+  {{- if .Values.ingress.tls }}
   tls:
     - hosts:
-        - {{ $component }}.{{ $.Values.ingress.host }}
-      secretName: {{ $tlsOverrides.secretName | default (printf "%s.%s" $component $.Values.ingress.tls.secretName) }}
+        - api.{{ .Values.ingress.host }}
+      secretName: api.{{ .Values.ingress.tls.secretName }}
+    - hosts:
+        - ws.{{ .Values.ingress.host }}
+      secretName: ws.{{ .Values.ingress.tls.secretName }}
   {{- end }}
   rules:
-    - host: {{ $component }}.{{ $.Values.ingress.host }}
+    - host: api.{{ .Values.ingress.host }}
       http:
         paths:
           - path: /
             pathType: Prefix
             backend:
               service:
-                name: {{ include (printf "novu.%s.fullname" $component) $ }}
+                name: {{ include "novu.api.fullname" . }}
                 port:
-                  number: {{ (get $.Values $component).port }}
-{{- end }}
+                  number: {{ $svcPortApi }}
+    - host: ws.{{ .Values.ingress.host }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "novu.ws.fullname" . }}
+                port:
+                  number: {{ $svcPortWs }}
+---
+apiVersion: {{ $apiVersion }}
+kind: Ingress
+metadata:
+  name: {{ $fullName }}-web
+  labels:
+    {{- include "novu.labels" . | nindent 4 }}
+  {{- with $webAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if and .Values.ingress.className (semverCompare ">=1.18-0" .Capabilities.KubeVersion.GitVersion) }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
+  {{- if .Values.ingress.tls }}
+  tls:
+    - hosts:
+        - web.{{ .Values.ingress.host }}
+      secretName: {{ $webTls.secretName | default (printf "web.%s" .Values.ingress.tls.secretName) }}
+  {{- end }}
+  rules:
+    - host: web.{{ .Values.ingress.host }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "novu.web.fullname" . }}
+                port:
+                  number: {{ $svcPortWeb }}
 {{- end }}

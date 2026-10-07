@@ -9,17 +9,13 @@ ingress:
   host: chart-example.local
   tls:
     secretName: novu-tls
-  # Per-component overrides, rendered as separate Ingresses (<fullname>-api/-web/-ws).
-  # `annotations` are merged over `ingress.annotations` (per key);
-  # `tls.secretName` replaces the default `<component>.<ingress.tls.secretName>`.
-  api:
+  # web.<host> is rendered as its own Ingress (<fullname>-web) so the dashboard can be
+  # restricted without affecting api/ws. `annotations` are merged over `ingress.annotations`
+  # (per key); `tls.secretName` replaces the default `web.<ingress.tls.secretName>`.
+  web:
     annotations: {}
     # tls:
     #   secretName: ""
-  web:
-    annotations: {}
-  ws:
-    annotations: {}
 
 
 service:

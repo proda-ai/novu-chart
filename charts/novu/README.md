@@ -49,13 +49,13 @@ The following table lists the most commonly used parameters. For the full list, 
 | `global.env.mongodb.autoCreateIndexes` | 🔍 Build MongoDB indexes on boot | `true` |
 | `global.env.secret.jwtSecret`    | 🔑 JWT signing secret            | *required* |
 | `ingress.enabled`                | 🚪 Enable ingress                | `false`    |
-| `ingress.annotations`            | 🏷️ Annotations shared by every Ingress | `{}` |
-| `ingress.<component>.annotations` | 🎯 Per-component annotations (`api`, `web`, `ws`), merged over `ingress.annotations` | `{}` |
-| `ingress.<component>.tls.secretName` | 🔒 Per-component TLS secret override | `<component>.<ingress.tls.secretName>` |
+| `ingress.annotations`            | 🏷️ Annotations shared by both Ingresses | `{}` |
+| `ingress.web.annotations`        | 🎯 Extra annotations for the web Ingress, merged over `ingress.annotations` | `{}` |
+| `ingress.web.tls.secretName`     | 🔒 TLS secret override for the web host | `web.<ingress.tls.secretName>` |
 
 ### 🚪 Ingress
 
-With `ingress.enabled`, the chart renders one Ingress per component (`<fullname>-api`, `<fullname>-web`, `<fullname>-ws`) for `api.<host>`, `web.<host>` and `ws.<host>`. Each one gets `ingress.annotations` plus its own `ingress.<component>.annotations` (component keys win), so you can, for example, restrict only the dashboard by source IP:
+With `ingress.enabled`, the chart renders two Ingresses: `<fullname>` for `api.<host>` and `ws.<host>`, and `<fullname>-web` for `web.<host>`. Both get `ingress.annotations`; the web one also gets `ingress.web.annotations` (its keys win), so you can restrict only the dashboard by source IP while the API and websocket stay reachable from browsers:
 
 ```yaml
 ingress:
