@@ -49,6 +49,22 @@ The following table lists the most commonly used parameters. For the full list, 
 | `global.env.mongodb.autoCreateIndexes` | 🔍 Build MongoDB indexes on boot | `true` |
 | `global.env.secret.jwtSecret`    | 🔑 JWT signing secret            | *required* |
 | `ingress.enabled`                | 🚪 Enable ingress                | `false`    |
+| `ingress.annotations`            | 🏷️ Annotations shared by every Ingress | `{}` |
+| `ingress.<component>.annotations` | 🎯 Per-component annotations (`api`, `web`, `ws`), merged over `ingress.annotations` | `{}` |
+| `ingress.<component>.tls.secretName` | 🔒 Per-component TLS secret override | `<component>.<ingress.tls.secretName>` |
+
+### 🚪 Ingress
+
+With `ingress.enabled`, the chart renders one Ingress per component (`<fullname>-api`, `<fullname>-web`, `<fullname>-ws`) for `api.<host>`, `web.<host>` and `ws.<host>`. Each one gets `ingress.annotations` plus its own `ingress.<component>.annotations` (component keys win), so you can, for example, restrict only the dashboard by source IP:
+
+```yaml
+ingress:
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt
+  web:
+    annotations:
+      nginx.ingress.kubernetes.io/whitelist-source-range: "10.0.0.0/8"
+```
 
 ## 🛢️ Persistence
 

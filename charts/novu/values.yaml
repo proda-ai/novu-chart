@@ -9,6 +9,17 @@ ingress:
   host: chart-example.local
   tls:
     secretName: novu-tls
+  # Per-component overrides, rendered as separate Ingresses (<fullname>-api/-web/-ws).
+  # `annotations` are merged over `ingress.annotations` (per key);
+  # `tls.secretName` replaces the default `<component>.<ingress.tls.secretName>`.
+  api:
+    annotations: {}
+    # tls:
+    #   secretName: ""
+  web:
+    annotations: {}
+  ws:
+    annotations: {}
 
 
 service:
