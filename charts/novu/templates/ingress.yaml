@@ -8,13 +8,16 @@
   {{- $_ := set .Values.ingress.annotations "kubernetes.io/ingress.class" .Values.ingress.className}}
   {{- end }}
 {{- end }}
-{{- if semverCompare ">=1.19-0" .Capabilities.KubeVersion.GitVersion -}}
-apiVersion: networking.k8s.io/v1
-{{- else if semverCompare ">=1.14-0" .Capabilities.KubeVersion.GitVersion -}}
-apiVersion: networking.k8s.io/v1beta1
-{{- else -}}
-apiVersion: extensions/v1beta1
+{{- $web := .Values.ingress.web | default dict }}
+{{- $webAnnotations := mustMergeOverwrite (deepCopy (.Values.ingress.annotations | default dict)) ($web.annotations | default dict) }}
+{{- $webTls := $web.tls | default dict }}
+{{- $apiVersion := "extensions/v1beta1" }}
+{{- if semverCompare ">=1.19-0" .Capabilities.KubeVersion.GitVersion }}
+{{- $apiVersion = "networking.k8s.io/v1" }}
+{{- else if semverCompare ">=1.14-0" .Capabilities.KubeVersion.GitVersion }}
+{{- $apiVersion = "networking.k8s.io/v1beta1" }}
 {{- end }}
+apiVersion: {{ $apiVersion }}
 kind: Ingress
 metadata:
   name: {{ $fullName }}
@@ -34,9 +37,6 @@ spec:
         - api.{{ .Values.ingress.host }}
       secretName: api.{{ .Values.ingress.tls.secretName }}
     - hosts:
-        - web.{{ .Values.ingress.host }}
-      secretName: web.{{ .Values.ingress.tls.secretName }}
-    - hosts:
         - ws.{{ .Values.ingress.host }}
       secretName: ws.{{ .Values.ingress.tls.secretName }}
   {{- end }}
@@ -51,16 +51,6 @@ spec:
                 name: {{ include "novu.api.fullname" . }}
                 port:
                   number: {{ $svcPortApi }}
-    - host: web.{{ .Values.ingress.host }}
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: {{ include "novu.web.fullname" . }}
-                port:
-                  number: {{ $svcPortWeb }}
     - host: ws.{{ .Values.ingress.host }}
       http:
         paths:
@@ -71,4 +61,36 @@ spec:
                 name: {{ include "novu.ws.fullname" . }}
                 port:
                   number: {{ $svcPortWs }}
+---
+apiVersion: {{ $apiVersion }}
+kind: Ingress
+metadata:
+  name: {{ $fullName }}-web
+  labels:
+    {{- include "novu.labels" . | nindent 4 }}
+  {{- with $webAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if and .Values.ingress.className (semverCompare ">=1.18-0" .Capabilities.KubeVersion.GitVersion) }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
+  {{- if .Values.ingress.tls }}
+  tls:
+    - hosts:
+        - web.{{ .Values.ingress.host }}
+      secretName: {{ $webTls.secretName | default (printf "web.%s" .Values.ingress.tls.secretName) }}
+  {{- end }}
+  rules:
+    - host: web.{{ .Values.ingress.host }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "novu.web.fullname" . }}
+                port:
+                  number: {{ $svcPortWeb }}
 {{- end }}

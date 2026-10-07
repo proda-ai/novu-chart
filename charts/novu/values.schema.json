@@ -28,7 +28,8 @@
               "type": "string"
             }
           }
-        }
+        },
+        "web": { "$ref": "#/$defs/ingressWeb" }
       },
       "required": ["enabled"]
     },
@@ -333,5 +334,29 @@
       "required": ["enabled"]
     }
   },
-  "additionalProperties": false
+  "additionalProperties": false,
+  "$defs": {
+    "ingressWeb": {
+      "type": "object",
+      "description": "Overrides for the web Ingress",
+      "properties": {
+        "annotations": {
+          "type": "object",
+          "description": "Merged over ingress.annotations",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "tls": {
+          "type": "object",
+          "properties": {
+            "secretName": {
+              "type": "string",
+              "description": "Replaces web.<ingress.tls.secretName>"
+            }
+          }
+        }
+      }
+    }
+  }
 }
