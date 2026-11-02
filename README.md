@@ -79,96 +79,11 @@ To get started with this Helm Chart, follow the steps below:
 You can customize the installation of Novu by modifying the values in your `values.yaml` file. Below is an example of
 the most common parameters:
 
-```yaml
-ingress:
-  enabled: false
-  className: ""
-  annotations: {}
-  host: chart-example.local
-  tls: []
+See [chart configuration](charts/novu/README.md) and [values.yaml](charts/novu/values.yaml) for the dashboard, API, worker and websocket settings.
 
-service:
-  type: ClusterIP
+## Upgrading 2.1.0 → 3.19
 
-web:
-  replicaCount: 1
-  image:
-    repository: ghcr.io/novuhq/novu/web
-    pullPolicy: IfNotPresent
-    tag: ""
-  port: 4200
-  resources: {}
-  widgets:
-    embedPath: http://localhost:4701/embed.umd.min.js
-    url: http://localhost:4500
-
-api:
-  replicaCount: 1
-  image:
-    repository: ghcr.io/novuhq/novu/api
-    pullPolicy: IfNotPresent
-    tag: ""
-  port: 3000
-  resources: {}
-  contextPath: ""
-
-worker:
-  replicaCount: 1
-  image:
-    repository: ghcr.io/novuhq/novu/worker
-    pullPolicy: IfNotPresent
-    tag: ""
-  resources: {}
-  broadcastQueueChunkSize: 100
-  multicastQueueChunkSize: 100
-
-ws:
-  replicaCount: 1
-  image:
-    repository: ghcr.io/novuhq/novu/ws
-    pullPolicy: IfNotPresent
-    tag: ""
-  port: 3002
-  contextPath: ""
-  resources: {}
-
-global:
-  imagePullSecrets: []
-  env:
-    nodeEnv: production
-    mongodb:
-      maxPoolSize: 200
-      minPoolSize: 75
-    secret:
-      jwtSecret: your-secret
-      storageKey: <ENCRYPTION_KEY_MUST_BE_32_LONG>
-    s3:
-      localStack: false
-      bucketName: your-bucket-name
-      region: your-region
-    aws:
-      accessKeyId: your-access-key-id
-      secretAccessKey: your-secret-access-key
-    sentry:
-      dsn: your-sentry-dsn
-    newRelic:
-      appName: your-new-relic-app-name
-      licenseKey: your-new-relic-license-key
-    apiRootUrl: http://localhost:3000
-    disableUserRegistration: false
-    frontBaseUrl: http://localhost:4200
-
-redis:
-  enabled: true
-  replica:
-    replicaCount: 1
-
-mongodb:
-  enabled: true
-```
-
-For a complete list of configurable values, refer to
-the [values.yaml file](https://github.com/nova-edge/novu-chart/blob/main/values.yaml).
+Chart 0.3.0 replaces web with the 3.19.0 dashboard on port 4000 and explicitly configures CE servers, private bridge access and health probes. This upgrade requires a scheduled maintenance window, coordinated backups, migration rehearsal and consumer checks. Follow the [upgrade runbook](docs/UPGRADE-3.19-RUNBOOK.md) and the [chart upgrade notes](charts/novu/README.md#upgrading-210--319). No migrations run automatically on Helm/Argo sync.
 
 ## 💻 Need Help?
 

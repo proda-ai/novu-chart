@@ -1,4 +1,4 @@
-# yaml-language-server: $schema=https://raw.githubusercontent.com/Nova-Edge/novu-chart/refs/heads/main/charts/novu/values.schema.json
+# yaml-language-server: $schema=./values.schema.json
 
 ingress:
   enabled: false
@@ -9,10 +9,8 @@ ingress:
   host: chart-example.local
   tls:
     secretName: novu-tls
-  # web.<host> is rendered as its own Ingress (<fullname>-web) so the dashboard can be
-  # restricted without affecting api/ws. `annotations` are merged over `ingress.annotations`
-  # (per key); `tls.secretName` replaces the default `web.<ingress.tls.secretName>`.
-  web:
+  # Dashboard access restrictions must not block browser API/WS traffic.
+  dashboard:
     annotations: {}
     # tls:
     #   secretName: ""
@@ -21,17 +19,20 @@ ingress:
 service:
   type: ClusterIP
 
-web:
+dashboard:
   replicaCount: 1
   image:
-    repository: ghcr.io/novuhq/novu/web
+    repository: ghcr.io/novuhq/novu/dashboard
     pullPolicy: IfNotPresent
     tag: ""
-  port: 4200
-  resources: { }
-  widgets:
-    embedPath: ""
-    url: ""
+  port: 4000
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
 
 api:
   replicaCount: 1
@@ -42,9 +43,14 @@ api:
   port: 3000
   resources: { }
   contextPath: ""
+  idempotencyEnabled: false
+  rateLimitingEnabled: false
+  newMessagesApiResponseEnabled: true
+  widgetBaseUrl: ""
 
 worker:
   replicaCount: 1
+  port: 3004
   image:
     repository: ghcr.io/novuhq/novu/worker
     pullPolicy: IfNotPresent
@@ -69,9 +75,16 @@ global:
     allowInsecureImages: true
   env:
     nodeEnv: production
+    isSelfHosted: true
+    novuEnterprise: false
+    isV2Enabled: true
+    logLevel: info
+    # Private bridge addresses are rejected by Novu's outbound SSRF guard unless allowed.
+    safeOutboundAllow: ".svc.cluster.local"
+    websocketUrl: http://localhost:3002
     mongodb:
-      maxPoolSize: 200
-      minPoolSize: 75
+      maxPoolSize: 50
+      minPoolSize: 10
       autoCreateIndexes: true
     secret:
       novuSecretKey: your-secret
@@ -87,11 +100,12 @@ global:
     sentry:
       dsn: your-sentry-dsn
     newRelic:
+      enabled: false
       appName: your-new-relic-app-name
       licenseKey: your-new-relic-license-key
     apiRootUrl: http://localhost:3000
     disableUserRegistration: false
-    frontBaseUrl: http://localhost:4200
+    frontBaseUrl: http://localhost:4000
 
 redis:
   enabled: true

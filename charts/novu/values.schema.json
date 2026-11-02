@@ -29,9 +29,13 @@
             }
           }
         },
-        "web": { "$ref": "#/$defs/ingressWeb" }
+        "dashboard": {
+          "$ref": "#/$defs/ingressDashboard"
+        }
       },
-      "required": ["enabled"]
+      "required": [
+        "enabled"
+      ]
     },
     "service": {
       "type": "object",
@@ -39,16 +43,22 @@
       "properties": {
         "type": {
           "type": "string",
-          "enum": ["ClusterIP", "NodePort", "LoadBalancer"],
+          "enum": [
+            "ClusterIP",
+            "NodePort",
+            "LoadBalancer"
+          ],
           "default": "ClusterIP",
           "description": "Determines how the Service is exposed"
         }
       },
-      "required": ["type"]
+      "required": [
+        "type"
+      ]
     },
-    "web": {
+    "dashboard": {
       "type": "object",
-      "description": "Frontend web component",
+      "description": "Frontend dashboard component",
       "properties": {
         "replicaCount": {
           "type": "integer",
@@ -62,7 +72,11 @@
             },
             "pullPolicy": {
               "type": "string",
-              "enum": ["Always", "IfNotPresent", "Never"]
+              "enum": [
+                "Always",
+                "IfNotPresent",
+                "Never"
+              ]
             },
             "tag": {
               "type": "string"
@@ -70,25 +84,19 @@
           }
         },
         "port": {
-          "type": "integer"
+          "type": "integer",
+          "const": 4000,
+          "description": "The published dashboard image listens on port 4000"
         },
         "resources": {
           "type": "object"
-        },
-        "widgets": {
-          "type": "object",
-          "description": "Embed widget configuration",
-          "properties": {
-            "embedPath": {
-              "type": "string"
-            },
-            "url": {
-              "type": "string"
-            }
-          }
         }
       },
-      "required": ["replicaCount", "image", "port"]
+      "required": [
+        "replicaCount",
+        "image",
+        "port"
+      ]
     },
     "api": {
       "type": "object",
@@ -106,7 +114,11 @@
             },
             "pullPolicy": {
               "type": "string",
-              "enum": ["Always", "IfNotPresent", "Never"]
+              "enum": [
+                "Always",
+                "IfNotPresent",
+                "Never"
+              ]
             },
             "tag": {
               "type": "string"
@@ -121,9 +133,24 @@
         },
         "contextPath": {
           "type": "string"
+        },
+        "idempotencyEnabled": {
+          "type": "boolean"
+        },
+        "rateLimitingEnabled": {
+          "type": "boolean"
+        },
+        "newMessagesApiResponseEnabled": {
+          "type": "boolean"
+        },
+        "widgetBaseUrl": {
+          "type": "string"
         }
       },
-      "required": ["replicaCount", "image"]
+      "required": [
+        "replicaCount",
+        "image"
+      ]
     },
     "worker": {
       "type": "object",
@@ -131,7 +158,7 @@
       "properties": {
         "replicaCount": {
           "type": "integer",
-          "minimum": 1
+          "minimum": 0
         },
         "image": {
           "type": "object",
@@ -141,7 +168,11 @@
             },
             "pullPolicy": {
               "type": "string",
-              "enum": ["Always", "IfNotPresent", "Never"]
+              "enum": [
+                "Always",
+                "IfNotPresent",
+                "Never"
+              ]
             },
             "tag": {
               "type": "string"
@@ -156,9 +187,17 @@
         },
         "multicastQueueChunkSize": {
           "type": "integer"
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
         }
       },
-      "required": ["replicaCount", "image"]
+      "required": [
+        "replicaCount",
+        "image"
+      ]
     },
     "ws": {
       "type": "object",
@@ -176,7 +215,11 @@
             },
             "pullPolicy": {
               "type": "string",
-              "enum": ["Always", "IfNotPresent", "Never"]
+              "enum": [
+                "Always",
+                "IfNotPresent",
+                "Never"
+              ]
             },
             "tag": {
               "type": "string"
@@ -193,7 +236,10 @@
           "type": "object"
         }
       },
-      "required": ["replicaCount", "image"]
+      "required": [
+        "replicaCount",
+        "image"
+      ]
     },
     "global": {
       "type": "object",
@@ -215,10 +261,12 @@
               "type": "object",
               "properties": {
                 "maxPoolSize": {
-                  "type": "integer"
+                  "type": "integer",
+                  "minimum": 0
                 },
                 "minPoolSize": {
-                  "type": "integer"
+                  "type": "integer",
+                  "minimum": 0
                 },
                 "autoCreateIndexes": {
                   "type": "boolean"
@@ -280,6 +328,9 @@
                 },
                 "licenseKey": {
                   "type": "string"
+                },
+                "enabled": {
+                  "type": "boolean"
                 }
               }
             },
@@ -291,11 +342,31 @@
             },
             "frontBaseUrl": {
               "type": "string"
+            },
+            "isSelfHosted": {
+              "type": "boolean"
+            },
+            "novuEnterprise": {
+              "type": "boolean"
+            },
+            "isV2Enabled": {
+              "type": "boolean"
+            },
+            "safeOutboundAllow": {
+              "type": "string"
+            },
+            "websocketUrl": {
+              "type": "string"
+            },
+            "logLevel": {
+              "type": "string"
             }
           }
         }
       },
-      "required": ["env"]
+      "required": [
+        "env"
+      ]
     },
     "redis": {
       "type": "object",
@@ -313,7 +384,9 @@
           }
         }
       },
-      "required": ["enabled"]
+      "required": [
+        "enabled"
+      ]
     },
     "mongodb": {
       "type": "object",
@@ -331,14 +404,16 @@
           }
         }
       },
-      "required": ["enabled"]
+      "required": [
+        "enabled"
+      ]
     }
   },
   "additionalProperties": false,
   "$defs": {
-    "ingressWeb": {
+    "ingressDashboard": {
       "type": "object",
-      "description": "Overrides for the web Ingress",
+      "description": "Overrides for the dashboard Ingress",
       "properties": {
         "annotations": {
           "type": "object",
@@ -352,7 +427,7 @@
           "properties": {
             "secretName": {
               "type": "string",
-              "description": "Replaces web.<ingress.tls.secretName>"
+              "description": "Replaces dashboard.<ingress.tls.secretName>"
             }
           }
         }

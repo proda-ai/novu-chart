@@ -69,10 +69,10 @@ Generate the full name of the api component.
 {{- end -}}
 
 {{/*
-Generate the full name of the web component.
+Generate the full name of the dashboard component.
 */}}
-{{- define "novu.web.fullname" -}}
-{{- printf "%s-%s" (include "novu.fullname" .) "web" -}}
+{{- define "novu.dashboard.fullname" -}}
+{{- printf "%s-%s" (include "novu.fullname" .) "dashboard" -}}
 {{- end -}}
 
 {{/*

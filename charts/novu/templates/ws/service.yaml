@@ -14,4 +14,4 @@ spec:
     - name: http
       protocol: TCP
       port: {{ .Values.ws.port }}
-      targetPort: 3002
+      targetPort: http

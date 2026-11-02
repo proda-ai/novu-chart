@@ -29,7 +29,8 @@ spec:
           image: "{{ .Values.ws.image.repository }}:{{ .Values.ws.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.ws.image.pullPolicy }}
           ports:
-            - containerPort: 3002
+            - name: http
+              containerPort: {{ .Values.ws.port }}
           envFrom:
             - configMapRef:
                 name: {{ include "novu.fullname" . }}-config
@@ -52,4 +53,24 @@ spec:
                   key: uri
           resources:
             {{- toYaml .Values.ws.resources | nindent 12 }}
+          startupProbe:
+            httpGet:
+              path: /v1/health-check
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /v1/health-check
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /v1/health-check
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
       restartPolicy: Always

@@ -6,8 +6,12 @@ metadata:
     app: {{ include "novu.name" . }}
     component: config
 data:
+  IS_SELF_HOSTED: {{ .Values.global.env.isSelfHosted | quote }}
+  NOVU_ENTERPRISE: {{ .Values.global.env.novuEnterprise | quote }}
+  LOG_LEVEL: {{ .Values.global.env.logLevel | quote }}
+  NEW_RELIC_ENABLED: {{ .Values.global.env.newRelic.enabled | quote }}
   NODE_ENV: {{ .Values.global.env.nodeEnv | quote }}
-  MONGO_URL: "mongodb://{{ include "mongodb.fullname" . }}-mongodb.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.mongodb.service.ports.mongodb }}/novu"
+  MONGO_MIN_POOL_SIZE: {{ .Values.global.env.mongodb.minPoolSize | quote }}
   MONGO_MAX_POOL_SIZE: {{ .Values.global.env.mongodb.maxPoolSize | quote }}
   # Novu's DalService sets mongoose `autoIndex` from this var and defaults it to
   # false, so leaving it unset means none of the schema indexes are ever built
@@ -23,25 +27,15 @@ data:
   AWS_ACCESS_KEY_ID: {{ .Values.global.env.aws.accessKeyId | quote }}
   NEW_RELIC_APP_NAME: {{ .Values.global.env.newRelic.appName | quote }}
   API_ROOT_URL: {{ .Values.global.env.apiRootUrl | quote }}
-  API_PORT: {{ .Values.api.port | quote }}
-  API_CONTEXT_PATH: {{ .Values.api.contextPath | quote }}
-  REACT_APP_API_URL: {{ .Values.global.env.apiRootUrl | quote }}
-  REACT_APP_ENVIRONMENT: {{ .Values.global.env.nodeEnv | quote }}
   REDIS_DB_INDEX: "2"
 ---
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: {{ include "novu.fullname" . }}-web-env-config
+  name: {{ include "novu.fullname" . }}-dashboard-config
   labels:
     app: {{ include "novu.name" . }}
-    component: config
+    component: dashboard
 data:
-  env-config.js: |
-    window._env_ = {
-      REACT_APP_API_URL: "${REACT_APP_API_URL}",
-      NODE_ENV: "${NODE_ENV}",
-      REACT_APP_WIDGET_EMBED_PATH: "${REACT_APP_WIDGET_EMBED_PATH}",
-      REACT_APP_IS_SELF_HOSTED: "${REACT_APP_IS_SELF_HOSTED}",
-      REACT_APP_WS_URL: "${REACT_APP_WS_URL}"
-    };
+  VITE_API_HOSTNAME: {{ .Values.global.env.apiRootUrl | quote }}
+  VITE_WEBSOCKET_HOSTNAME: {{ .Values.global.env.websocketUrl | quote }}
