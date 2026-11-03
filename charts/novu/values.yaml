@@ -38,7 +38,7 @@ api:
   contextPath: ""
   idempotencyEnabled: false
   rateLimitingEnabled: false
-  newMessagesApiResponseEnabled: true
+  newMessagesApiResponseEnabled: false
   widgetBaseUrl: ""
 
 worker:

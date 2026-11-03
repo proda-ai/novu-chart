@@ -40,7 +40,7 @@ spec:
             - name: PORT
               value: "{{ .Values.ws.port }}"
             - name: WS_CONTEXT_PATH
-              value: "{{ .Values.ws.contextPath }}"
+              value: {{ .Values.ws.contextPath | trimAll "/" | quote }}
             - name: REDIS_PASSWORD
               valueFrom:
                 secretKeyRef:
@@ -55,20 +55,20 @@ spec:
             {{- toYaml .Values.ws.resources | nindent 12 }}
           startupProbe:
             httpGet:
-              path: /v1/health-check
+              path: {{ printf "%s/v1/health-check" (printf "/%s" (.Values.ws.contextPath | trimAll "/") | trimSuffix "/") | quote }}
               port: http
             periodSeconds: 10
             timeoutSeconds: 5
             failureThreshold: 30
           livenessProbe:
             httpGet:
-              path: /v1/health-check
+              path: {{ printf "%s/v1/health-check" (printf "/%s" (.Values.ws.contextPath | trimAll "/") | trimSuffix "/") | quote }}
               port: http
             periodSeconds: 10
             timeoutSeconds: 5
           readinessProbe:
             httpGet:
-              path: /v1/health-check
+              path: {{ printf "%s/v1/health-check" (printf "/%s" (.Values.ws.contextPath | trimAll "/") | trimSuffix "/") | quote }}
               port: http
             periodSeconds: 10
             timeoutSeconds: 5

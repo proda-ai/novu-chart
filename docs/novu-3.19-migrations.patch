@@ -151,3 +151,118 @@
 +    console.error(error);
 +    process.exit(1);
 +  });
+--- a/apps/api/migrations/002-remove-duplicate-identifiers/remove-duplicate-identifiers.ts
++++ b/apps/api/migrations/002-remove-duplicate-identifiers/remove-duplicate-identifiers.ts
+@@ -2,7 +2,7 @@
+
+ import { NestFactory } from '@nestjs/core';
+ import { PinoLogger } from '@novu/application-generic';
+-import { TopicSubscribersRepository } from '@novu/dal';
++import { mongoose, TopicSubscribersRepository } from '@novu/dal';
+ import { AppModule } from '../../src/app.module';
+
+ interface DuplicateGroup {
+@@ -86,13 +86,14 @@
+       if (deleteOps.length >= BATCH_SIZE) {
+         try {
+           const bulkResponse = await topicSubscribersRepository.bulkWrite(deleteOps);
+-          const deletedCount = bulkResponse.deletedCount || deleteOps.length;
++          const deletedCount = bulkResponse.deletedCount ?? 0;
++          if (deletedCount !== deleteOps.length) throw new Error('Topic duplicate batch was not fully deleted');
+           totalDeletedDocuments += deletedCount;
+           logger.info(`Deleted batch of ${deletedCount} duplicate documents`);
+           deleteOps = [];
+         } catch (error) {
+           logger.error(`Error in bulk delete: ${error}`);
+-          deleteOps = [];
++          throw error;
+         }
+       }
+     }
+@@ -100,16 +101,22 @@
+     if (deleteOps.length > 0) {
+       try {
+         const bulkResponse = await topicSubscribersRepository.bulkWrite(deleteOps);
+-        const deletedCount = bulkResponse.deletedCount || deleteOps.length;
++        const deletedCount = bulkResponse.deletedCount ?? 0;
++        if (deletedCount !== deleteOps.length) throw new Error('Topic duplicate batch was not fully deleted');
+         totalDeletedDocuments += deletedCount;
+         logger.info(`Deleted final batch of ${deletedCount} duplicate documents`);
+       } catch (error) {
+         logger.error(`Error in final bulk delete: ${error}`);
++        throw error;
+       }
+     }
+   } catch (error) {
+     logger.error(`Error during migration: ${error}`);
++    throw error;
+   }
++
++  const remaining = await topicSubscribersRepository._model.aggregate([...aggregationPipeline, { $limit: 1 }]);
++  if (remaining.length) throw new Error('Topic subscribers still have duplicate identifiers');
+
+   logger.info(
+     `end migration - processed ${totalDuplicateGroups} duplicate groups, deleted ${totalDeletedDocuments} documents`
+@@ -119,6 +126,7 @@
+ }
+
+ run()
++  .finally(() => mongoose.disconnect())
+   .then(() => {
+     console.log('Migration completed successfully');
+     process.exit(0);
+--- a/apps/api/migrations/add-layout-id-to-email-controls/add-layout-id-to-email-controls-migration.ts
++++ b/apps/api/migrations/add-layout-id-to-email-controls/add-layout-id-to-email-controls-migration.ts
+@@ -2,7 +2,7 @@
+
+ import { NestFactory } from '@nestjs/core';
+ import { PinoLogger } from '@novu/application-generic';
+-import { MessageTemplateRepository, OrganizationRepository } from '@novu/dal';
++import { MessageTemplateRepository, mongoose, OrganizationRepository } from '@novu/dal';
+ import { StepTypeEnum, UiComponentEnum } from '@novu/shared';
+
+ import { AppModule } from '../../src/app.module';
+@@ -25,7 +25,6 @@
+   logger.info(`Found ${organizations.length} organizations`);
+
+   for (const organization of organizations) {
+-    // Find all email message templates that have controls but don't have layoutId in the schema
+     const emailTemplates = await messageTemplateRepository.find({
+       _organizationId: organization._id,
+       type: StepTypeEnum.EMAIL,
+@@ -44,7 +43,6 @@
+       logger.info(`Migrating template ${template._id}`);
+
+       try {
+-        // Add layoutId to the schema properties
+         const updatePayload = {
+           $set: {
+             'controls.schema.properties.layoutId': {
+@@ -67,15 +65,27 @@
+         logger.info(`Template ${template._id} - layoutId field added to controls schema`);
+       } catch (error) {
+         logger.error(`Failed to migrate template ${template._id}`, error);
++        throw error;
+       }
+     }
+   }
++
++  const remaining = await messageTemplateRepository._model.countDocuments({
++    type: StepTypeEnum.EMAIL,
++    'controls.schema': { $exists: true },
++    'controls.uiSchema': { $exists: true },
++    'controls.schema.properties.layoutId': { $exists: false },
++    'controls.uiSchema.properties.layoutId': { $exists: false },
++    deleted: false,
++  });
++  if (remaining) throw new Error('Email templates still require layoutId migration');
+
+   logger.info('end migration');
+   await app.close();
+ }
+
+ run()
++  .finally(() => mongoose.disconnect())
+   .then(() => {
+     console.log('Migration completed successfully');
+     process.exit(0);

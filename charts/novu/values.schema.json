@@ -35,7 +35,8 @@
       },
       "required": [
         "enabled"
-      ]
+      ],
+      "additionalProperties": false
     },
     "service": {
       "type": "object",
