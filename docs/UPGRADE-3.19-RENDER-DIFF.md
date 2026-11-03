@@ -4,6 +4,8 @@ WEB-6859, 2026-11-02. Baseline chart commit `b6f40fb6ab529119dd34bd47e6acaa16815
 
 Validation: default and staging `helm lint` pass; baseline and updated `helm template` pass. All four image/port/probe configurations, Service selectors/targets, checksum annotations, dashboard-only IP/CSP annotations, unchanged Mongo/Redis StatefulSet specs (excluding the existing randomly generated Redis Secret checksum) and unchanged application Secret data were checked. No migration Job is rendered. A changed config/Secret was rendered to verify rollout checksums change; a dashboard TLS override preserved API/WS TLS. The worker-paused render (`worker.replicaCount=0`) also passes. Renovate config passes its official JSON schema. Actual dashboard image output matches the staging CSP hash. Live compatibility, migrations and capacity remain rollout gates.
 
+Review follow-up: the chart default SSRF allowlist is now empty, its Mongo maximum remains 200 (minimum 10), and an unset websocket URL derives from ingress host/TLS or falls back to localhost only without ingress. The EU staging values in `aoa-novu-3-19/environments/staging/novu.yaml` explicitly set `.svc.cluster.local`, Mongo 10/50 and the public websocket URL, so their effective Deployment diff below is unchanged. Replace that staging SSRF override with the confirmed bridge FQDN before rollout. Production pool sizing requires the runbook's explicit capacity review.
+
 ```diff
 --- b6f40fb / original staging values
 +++ 0.3.0 / updated staging values

@@ -1,0 +1,153 @@
+--- a/apps/api/migrations/preferences-uniqueness/preferences-uniqueness-migration.ts
++++ b/apps/api/migrations/preferences-uniqueness/preferences-uniqueness-migration.ts
+@@ -2,7 +2,7 @@
+ 
+ import { NestFactory } from '@nestjs/core';
+ import { PinoLogger } from '@novu/application-generic';
+-import { PreferencesRepository } from '@novu/dal';
++import { mongoose, PreferencesRepository } from '@novu/dal';
+ import { PreferencesTypeEnum } from '@novu/shared';
+ import { Expression } from 'mongoose';
+ import { AppModule } from '../../src/app.module';
+@@ -71,14 +71,17 @@
+   );
+ 
+   await Promise.allSettled(promises).then((results) => {
++    let failed = false;
+     for (const result of results) {
+       if (result.status === 'rejected') {
++        failed = true;
+         const index = results.indexOf(result);
+         const promiseType = promiseTypes[index];
+ 
+         logger.error('error deleting %s preferences duplicates: %s', promiseType, result.reason);
+       }
+     }
++    if (failed) throw new Error('Preference deduplication failed');
+   });
+ 
+   logger.info('end migration');
+@@ -108,7 +111,15 @@
+       { $sort: sort },
+       {
+         $group: {
+-          _id: groupId,
++          _id: {
++            ...groupId,
++            ...(type.startsWith('SUBSCRIBER_')
++              ? {
++                  contextKeysHash: { $ifNull: ['$contextKeysHash', 'DEFAULT_CONTEXT'] },
++                  contextKeys: { $sortArray: { input: { $ifNull: ['$contextKeys', []] }, sortBy: 1 } },
++                }
++              : {}),
++          },
+           ids: { $push: { id: '$_id', updatedAt: '$updatedAt', _environmentId: '$_environmentId' } },
+           count: { $sum: 1 },
+         },
+@@ -121,9 +132,13 @@
+   logger.info('found %s %s preferences duplicates', cursor.length, type);
+ 
+   for (const doc of cursor) {
+-    // sort by updatedAt ascending
+-    const sorted = doc.ids.sort((a, b) => a.updatedAt.getTime() - b.updatedAt.getTime());
+-    const _idToKeep = sorted.shift(); // keep the oldest
++    if (doc.ids.some(({ updatedAt }) => !(updatedAt instanceof Date) || !Number.isFinite(updatedAt.getTime()))) {
++      throw new Error('Preference duplicate has an invalid updatedAt; reconcile it before migration');
++    }
++    const sorted = doc.ids.sort(
++      (a, b) => b.updatedAt.getTime() - a.updatedAt.getTime() || String(b.id).localeCompare(String(a.id))
++    );
++    sorted.shift();
+     const toDelete = sorted.map((d) => d.id);
+ 
+     await preferencesRepository.delete({
+@@ -135,12 +150,10 @@
+   logger.info('deleted %s %s preferences duplicates', cursor.length, type);
+ }
+ 
+-/* run()
+-  .then(() => {
+-    console.log('Migration completed successfully');
+-    process.exit(0);
+-  })
++run()
++  .finally(() => mongoose.disconnect())
++  .then(() => process.exit(0))
+   .catch((error) => {
+     console.error(error);
+     process.exit(1);
+-  }); */
++  });
+--- a/apps/api/migrations/001-add-default-identifier-to-topic-subscribers/add-default-identifier-to-topic-subscribers-migration.ts
++++ b/apps/api/migrations/001-add-default-identifier-to-topic-subscribers/add-default-identifier-to-topic-subscribers-migration.ts
+@@ -2,7 +2,7 @@
+ 
+ import { NestFactory } from '@nestjs/core';
+ import { buildDefaultSubscriptionIdentifier, PinoLogger } from '@novu/application-generic';
+-import { TopicSubscribersRepository } from '@novu/dal';
++import { mongoose, TopicSubscribersRepository } from '@novu/dal';
+ import { AppModule } from '../../src/app.module';
+ 
+ export async function run() {
+@@ -33,7 +33,7 @@
+ 
+     if (!topicSubscriber.topicKey || !topicSubscriber.externalSubscriberId) {
+       logger.warn(`Skipping topic subscriber ${topicSubscriber._id} - missing topicKey or externalSubscriberId`);
+-      continue;
++      throw new Error('Topic subscriber is missing topicKey or externalSubscriberId');
+     }
+ 
+     const identifier = buildDefaultSubscriptionIdentifier(
+@@ -65,7 +65,7 @@
+         bulkWriteOps = [];
+       } catch (error) {
+         logger.error(`Error in bulk write: ${error}`);
+-        bulkWriteOps = [];
++        throw error;
+       }
+     }
+   }
+@@ -79,7 +79,12 @@
+       );
+     } catch (error) {
+       logger.error(`Error in final bulk write: ${error}`);
++      throw error;
+     }
++  }
++
++  if (await topicSubscribersRepository._model.countDocuments({ identifier: { $exists: false } })) {
++    throw new Error('Topic subscribers still have missing identifiers');
+   }
+ 
+   logger.info(`end migration - processed ${processedCount} topic subscribers, updated ${updatedCount}`);
+@@ -88,6 +93,7 @@
+ }
+ 
+ run()
++  .finally(() => mongoose.disconnect())
+   .then(() => {
+     console.log('Migration completed successfully');
+     process.exit(0);
+--- a/apps/api/migrations/email-step-ui-schema-html-editor/email-step-ui-schema-html-editor-migration.ts
++++ b/apps/api/migrations/email-step-ui-schema-html-editor/email-step-ui-schema-html-editor-migration.ts
+@@ -1,7 +1,7 @@
+ import '../../src/config';
+ import { NestFactory } from '@nestjs/core';
+ import { PinoLogger } from '@novu/application-generic';
+-import { MessageTemplateRepository, OrganizationRepository } from '@novu/dal';
++import { MessageTemplateRepository, mongoose, OrganizationRepository } from '@novu/dal';
+ import { UiComponentEnum } from '@novu/shared';
+ import { AppModule } from '../../src/app.module';
+ 
+@@ -52,4 +52,10 @@
+   await app.close();
+ }
+ 
+-run();
++run()
++  .finally(() => mongoose.disconnect())
++  .then(() => process.exit(0))
++  .catch((error) => {
++    console.error(error);
++    process.exit(1);
++  });

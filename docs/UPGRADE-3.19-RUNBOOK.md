@@ -30,9 +30,9 @@ Only `environments/staging/novu.yaml` changes in ArgoCD. US staging and both pro
 | WS | `ws:3.19.0`, 3002 | PORT and empty WS_CONTEXT_PATH; retain Socket.IO routing. |
 | Dashboard | `dashboard:3.19.0`, 4000 | Only public VITE_API_HOSTNAME and VITE_WEBSOCKET_HOSTNAME from its own ConfigMap. No server credentials or shared server env. |
 
-All servers receive IS_SELF_HOSTED=true, NOVU_ENTERPRISE=false, LOG_LEVEL=info, NEW_RELIC_ENABLED=false and explicit Mongo min/max pools 10/50 per process. API/worker also receive IS_V2_ENABLED=true and NOVU_SAFE_OUTBOUND_ALLOW. API idempotency and rate limiting are false; new messages response format is true. Preserve NODE_ENV, Redis DB 2, credentials, S3 placeholders and MONGO_AUTO_CREATE_INDEXES=true after migration/index reconciliation. The fork's index behavior is application startup auto-indexing; there is no separate index Job in the baseline.
+All servers receive IS_SELF_HOSTED=true, NOVU_ENTERPRISE=false, LOG_LEVEL=info, NEW_RELIC_ENABLED=false and explicit Mongo min/max pools 10/200 per process by default. EU staging explicitly overrides these to 10/50; that trial ceiling is not a production recommendation. API/worker also receive IS_V2_ENABLED=true and NOVU_SAFE_OUTBOUND_ALLOW. API idempotency and rate limiting are false; new messages response format is true. Preserve NODE_ENV, Redis DB 2, credentials, S3 placeholders and MONGO_AUTO_CREATE_INDEXES=true after migration/index reconciliation. The fork's index behavior is application startup auto-indexing; there is no separate index Job in the baseline.
 
-`global.env.safeOutboundAllow` defaults to `.svc.cluster.local`. Prefer the confirmed bridge's exact FQDN later. Entries are comma-separated hosts, suffixes, IPs or CIDRs, not URLs/paths. Never use `*` or allow all private networks. Keep `/audit-log-service-api/novu`, signing keys and NetworkPolicy reachability for API discovery and worker execution. See the [parser](https://github.com/novuhq/novu/blob/v3.19.0/packages/shared/src/utils/outbound-ssrf-allow-list.ts).
+`global.env.safeOutboundAllow` defaults to empty (no SSRF exceptions). Before rollout, set it to the confirmed bridge's exact FQDN. The current aoa EU staging values explicitly override it to `.svc.cluster.local`; replace that broad override before deploying, since changing the chart default does not override environment values. Entries are comma-separated hosts, suffixes, IPs or CIDRs, not URLs/paths. Never use `*` or allow all private networks. Keep `/audit-log-service-api/novu`, signing keys and NetworkPolicy reachability for API discovery and worker execution. See the [parser](https://github.com/novuhq/novu/blob/v3.19.0/packages/shared/src/utils/outbound-ssrf-allow-list.ts).
 
 This implementation follows the requested dashboard rename: Helm `web` → `dashboard`, `ingress.web` → `ingress.dashboard`, Deployment/Service/Ingress `novu-web` → `novu-dashboard`, and EU staging `web.novu-staging.platform-services.proda.dev` → `dashboard.novu-staging.platform-services.proda.dev`. This deliberately differs from the research's proposed retention of the `web` identities. Verify DNS and issue the new `dashboard.novu-tls` certificate before opening traffic. Prune the obsolete web resources and `novu-web-env-config` during the scheduled sync after verifying the new route. The API/WS hosts, aliases, service names, ports and TLS secrets remain unchanged.
 
@@ -59,7 +59,7 @@ PY
 
 Expected current hashes: `sha256-79dQgVDi0j05hGoVIjK91yw9jZqg/aIAOBwiHrabRJc=` and `sha256-R5PgAGw+2awOeOkUj4FKLY73UnDDGS/YjVqSabe0YsU=`. Verify the served HTML, browser console, login and SPA navigation in rehearsal; a matching hash alone is not an end-to-end test.
 
-Trial staging budgets, not measured requirements: API requests 500m/512Mi, limits 1000m/1Gi; worker 250m/512Mi → 1000m/1Gi; WS 100m/256Mi → 500m/512Mi; dashboard 100m/128Mi → 500m/512Mi. Mongo remains 500m/2Gi → 2000m/4Gi. Gate promotion on RSS, OOM/restarts, p95 latency and queue lag. [Novu capacity guidance](https://docs.novu.co/community/self-hosting-novu/overview) is larger than these trial application budgets.
+Trial staging budgets, not measured requirements: API requests 500m/512Mi, limits 1000m/1Gi; worker 250m/512Mi → 1000m/1Gi; WS 100m/256Mi → 500m/512Mi; dashboard 100m/128Mi → 500m/512Mi. Mongo remains 500m/2Gi → 2000m/4Gi. Gate promotion on RSS, OOM/restarts, p95 latency and queue lag. Explicitly review Mongo pool sizing before each production promotion: the old maximum was 200, the chart retains 200, and staging overrides it to 50. The newly applied minimum is 10 per process. Record approved min/max values, Pod/process counts, aggregate connections, Mongo connection capacity, pool checkout wait/timeouts and load-test latency; do not copy staging's 10/50 into production without this review. [Novu capacity guidance](https://docs.novu.co/community/self-hosting-novu/overview) is larger than these trial application budgets.
 
 ## Preflight and maintenance barrier
 
@@ -105,6 +105,17 @@ The [3.19 version](https://github.com/novuhq/novu/blob/v3.19.0/apps/api/migratio
 
 [Official migration process](https://docs.novu.co/community/self-hosting-novu/data-migrations). The stock runtime images are not supported source migration runners. Build a dedicated, immutable image from the exact tag, including source, development dependencies, built workspace libraries and the API's TS config. For 3.19 use Node 22 compatible with the tagged Dockerfile and pnpm 11.0.9; for the conditional legacy runner use Node 20 and pnpm 9.11.0 from v2.1.0. Use `pnpm install --frozen-lockfile`, `pnpm build:api` at repository root and retain the complete workspace. Build CE without enterprise registry credentials. Resolve any build issues in rehearsal; never change the lockfile or pull floating migration source during the maintenance window.
 
+Apply the bundled [migration runner patch](novu-3.19-migrations.patch) to the exact v3.19.0 source **before** building the runner. Copy it to `/tmp/novu-3.19-migrations.patch` and run from the source repository root:
+
+```sh
+patch --dry-run --fuzz=0 -p1 < /tmp/novu-3.19-migrations.patch
+patch --fuzz=0 -p1 < /tmp/novu-3.19-migrations.patch
+```
+
+Require a clean application with no offsets; record the patch checksum with the runner digest. Never execute the three affected stock scripts. The patched preference migration keeps the latest `updatedAt`, breaking ties by greatest `_id`, and rejects missing/invalid timestamps. Subscriber grouping includes both `contextKeysHash` (missing means `DEFAULT_CONTEXT`) and sorted `contextKeys` (missing means empty), so distinct contexts are not collapsed. Review/export each proposed survivor and its channel opt-outs before execution; reconcile exceptions explicitly rather than silently accepting a timestamp policy. Inconsistent context hashes/keys must be reconciled against the target schema before index creation. `$sortArray` requires MongoDB 5.2+; the scoped deployment uses 8.0.8, and other deployments must verify this prerequisite.
+
+Preference-type failures are collected and then thrown after all types settle. Topic batch failures, invalid source links and remaining missing identifiers fail the Job. All three patched entrypoints await Mongo disconnect and explicitly exit 0/1. Rehearse success and injected write/cleanup failures for each, both topic batch paths, duplicate preferences with different contexts, tied/invalid timestamps and preserved opt-outs. Success must terminate; every injected failure must exit nonzero. The Job deadline below bounds bootstrap/cleanup hangs and must be sized from rehearsal; a deadline failure blocks progression.
+
 Runner build and database execution are **not verified** by Helm validation. Rehearse all applicable commands, module resolution, Nest bootstrap, flags and exit behavior on the restored copy; record the runner digest before approving rollout. `MIGRATION=true` is not proof that bootstrap cannot make external calls; enforce rehearsal isolation.
 
 Use one manually created Job per command, no Helm/Argo migration hooks, no automatic retry. Adapt this template to the rehearsal namespace and isolated Secret/ConfigMap names first; production names below are for the eventual scheduled window. Replace the image digest, Job name and command before applying. The ConfigMap must contain the reviewed 3.19 server settings even if live workloads are still on 2.1; create a separate migration ConfigMap from the reviewed render when necessary.
@@ -117,6 +128,7 @@ metadata:
   namespace: novu
 spec:
   backoffLimit: 0
+  activeDeadlineSeconds: 1800
   template:
     spec:
       restartPolicy: Never
@@ -168,19 +180,19 @@ Compared complete v2.1.0/v3.19.0 source trees under [`apps/api/migrations`](http
 
 | Order | Path under migrations/ | Applicability and rerun behavior |
 | --- | --- | --- |
-| 1 | `preferences-uniqueness/preferences-uniqueness-migration.ts` | Required for conflicting duplicates among SUBSCRIBER_GLOBAL, SUBSCRIBER_WORKFLOW, USER_WORKFLOW and WORKFLOW_RESOURCE. Destructive: keeps **oldest updatedAt**, not the latest preference. Review/export exact survivors first. Idempotent on unchanged data. Do not use this older grouping on distinct context-specific preferences without an explicit reconciliation plan. |
-| 2 | `001-add-default-identifier-to-topic-subscribers/add-default-identifier-to-topic-subscribers-migration.ts` | Required for existing topic links without identifier. Missing-field filter is idempotent. Skips missing topicKey/externalSubscriberId: repair these before proceeding. |
+| 1 | `preferences-uniqueness/preferences-uniqueness-migration.ts` | Required for conflicting duplicates among SUBSCRIBER_GLOBAL, SUBSCRIBER_WORKFLOW, USER_WORKFLOW and WORKFLOW_RESOURCE. Use the patched runner only: keeps latest `updatedAt` (greatest `_id` on ties), preserves distinct subscriber contexts and propagates failures. Destructive: review/export exact survivors and reconcile context metadata first. Idempotent on unchanged data. |
+| 2 | `001-add-default-identifier-to-topic-subscribers/add-default-identifier-to-topic-subscribers-migration.ts` | Required for existing topic links without identifier. Use the patched runner only. Missing-field filter is idempotent. Missing topicKey/externalSubscriberId, failed batches or remaining missing identifiers fail the Job; repair before proceeding. |
 | 3 | `002-remove-duplicate-identifiers/remove-duplicate-identifiers.ts` | Required when environment+identifier duplicates exist, after 001. Destructively keeps lowest `_id`; review survivors. Idempotent on unchanged data. |
-| 4 | `email-step-ui-schema-html-editor/email-step-ui-schema-html-editor-migration.ts` | Required for email templates with controls.uiSchema; otherwise no-op. Repeated $set has the same content but can change timestamps. |
+| 4 | `email-step-ui-schema-html-editor/email-step-ui-schema-html-editor-migration.ts` | Use the patched runner with explicit disconnect/exit. Required for email templates with controls.uiSchema; otherwise no-op. Repeated $set has the same content but can change timestamps. |
 | 5 | `add-layout-id-to-email-controls/add-layout-id-to-email-controls-migration.ts` | Required for nondeleted email templates with schema/uiSchema and both layoutId properties missing. Idempotent filter; inspect partially populated templates separately. |
 | 6 | `agent-subscriber-access-default/agent-subscriber-access-default.migration.ts` | Conditional on existing agents missing behavior.subscriberAccess. Managed runtime+managedRuntime → open, others → restricted; expected no-op for this deployment. Idempotent missing-field filter. Needs explicit DAL connection. |
 | 7 | `infobip-sms-base-url/deactivate-misconfigured-infobip-sms-integrations.migration.ts` | Conditional on active Infobip SMS integrations with unsafe/missing baseUrl. Deactivates them; unrelated to SendGrid. Idempotent active-only filter. Export only, needs explicit DAL connection and original encryption key. |
 | Deferred | `deleteLogs/dropLogsCollection.ts` | Optional destructive cleanup of obsolete logs; defer until after rollback window. Rerun catches NamespaceNotFound rather than clean success. |
 
-Run only the audited applicable steps, in order, with auto-index creation disabled:
+Run only the audited applicable steps, in order, with auto-index creation disabled, using the immutable patched runner above:
 
 ```sh
-pnpm exec ts-node --transpileOnly -e 'require("./migrations/preferences-uniqueness/preferences-uniqueness-migration").run().then(()=>process.exit(0)).catch(e=>{console.error(e);process.exit(1)})'
+pnpm exec ts-node --transpileOnly ./migrations/preferences-uniqueness/preferences-uniqueness-migration.ts
 ```
 
 ```sh
@@ -213,7 +225,7 @@ Only after the rollback window, if separately scheduled:
 pnpm exec ts-node --transpileOnly ./migrations/deleteLogs/dropLogsCollection.ts
 ```
 
-Several scripts catch/log failures and exit zero; preference dedup uses `Promise.allSettled`. A completed Job is not proof of migration success. Historical files with logic changes (`encrypt-api-keys`, `encrypt-credentials`, subscriber dedup, `changes-migration.ts`) are **not** new mandatory upgrade steps; audit existing encryption/dedup state instead of rerunning them. Other historical changes are formatting/import/logger changes; `subscriber-preferences-level` was removed. The six new `clickhouse-migrations/{1_initial_schema,2_add_workflow_id_to_schema,3_analytics_tables,4_refactor_traces_schema,5_finalize_table_exchange,6_add_source_to_requests}.sql` files are inapplicable without ClickHouse. `msteams-multi-tenant/README.md` describes Azure re-consent, not a Mongo migration.
+The three patched scripts propagate failures; other upstream scripts can still catch/log errors. A completed Job is not proof of migration success: require the postconditions below before advancing. Historical files with logic changes (`encrypt-api-keys`, `encrypt-credentials`, subscriber dedup, `changes-migration.ts`) are **not** new mandatory upgrade steps; audit existing encryption/dedup state instead of rerunning them. Other historical changes are formatting/import/logger changes; `subscriber-preferences-level` was removed. The six new `clickhouse-migrations/{1_initial_schema,2_add_workflow_id_to_schema,3_analytics_tables,4_refactor_traces_schema,5_finalize_table_exchange,6_add_source_to_requests}.sql` files are inapplicable without ClickHouse. `msteams-multi-tenant/README.md` describes Azure re-consent, not a Mongo migration.
 
 ## Migration verification and indexes
 
@@ -233,7 +245,11 @@ printjson(db.topicsubscribers.aggregate([
 ]).toArray());
 for (const type of ["SUBSCRIBER_GLOBAL", "SUBSCRIBER_WORKFLOW", "USER_WORKFLOW", "WORKFLOW_RESOURCE"]) {
   const key = {env: "$_environmentId"};
-  if (type.startsWith("SUBSCRIBER_")) key.subscriber = "$_subscriberId";
+  if (type.startsWith("SUBSCRIBER_")) {
+    key.subscriber = "$_subscriberId";
+    key.contextKeysHash = {$ifNull: ["$contextKeysHash", "DEFAULT_CONTEXT"]};
+    key.contextKeys = {$sortArray: {input: {$ifNull: ["$contextKeys", []]}, sortBy: 1}};
+  }
   if (type !== "SUBSCRIBER_GLOBAL") key.template = "$_templateId";
   printjson({type, duplicates: db.preferences.aggregate([
     {$match: {type}}, {$group: {_id: key, count: {$sum: 1}}},
@@ -242,7 +258,7 @@ for (const type of ["SUBSCRIBER_GLOBAL", "SUBSCRIBER_WORKFLOW", "USER_WORKFLOW",
 }'
 ```
 
-Confirm collection names against the inventory before interpreting results. Require zero unresolved missing topic identifiers/duplicate groups for the legacy dataset. Review null/empty identifiers separately. Compare deleted counts with reviewed survivor manifests and preserve representative preference values, including channel opt-outs. For context-specific preferences the dedup grouping above is an audit warning, not permission to delete valid distinct contexts.
+Confirm collection names against the inventory before interpreting results. Require zero unresolved missing topic identifiers/duplicate groups for the legacy dataset. Review null/empty identifiers separately. Compare deleted counts with reviewed survivor manifests and preserve representative preference values, including channel opt-outs. The audit uses the patched runner's context-aware grouping. Separately check the target unique index keys for collisions caused by inconsistent context hashes; reconcile those records without deleting valid distinct contexts.
 
 For email UI fields compare affected template IDs and resulting body/editorType properties against the migration's exact $set values; check zero remaining templates matching the layout migration filter and inspect partial layouts. For agents require no missing behavior.subscriberAccess and correct managed/open versus restricted values. For Infobip verify only reviewed integration IDs were deactivated and no SendGrid flags or credentials changed. Confirm all other entity counts unchanged except approved deduplication, including organizations/environments/workflows/subscribers/topics.
 

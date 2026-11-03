@@ -1,19 +1,12 @@
-# yaml-language-server: $schema=./values.schema.json
-
 ingress:
   enabled: false
   className: ""
   annotations: { }
-    # kubernetes.io/ingress.class: nginx
-    # kubernetes.io/tls-acme: "true"
   host: chart-example.local
   tls:
     secretName: novu-tls
-  # Dashboard access restrictions must not block browser API/WS traffic.
   dashboard:
     annotations: {}
-    # tls:
-    #   secretName: ""
 
 
 service:
@@ -79,11 +72,10 @@ global:
     novuEnterprise: false
     isV2Enabled: true
     logLevel: info
-    # Private bridge addresses are rejected by Novu's outbound SSRF guard unless allowed.
-    safeOutboundAllow: ".svc.cluster.local"
-    websocketUrl: http://localhost:3002
+    safeOutboundAllow: ""
+    websocketUrl: ""
     mongodb:
-      maxPoolSize: 50
+      maxPoolSize: 200
       minPoolSize: 10
       autoCreateIndexes: true
     secret:

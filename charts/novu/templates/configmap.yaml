@@ -38,4 +38,8 @@ metadata:
     component: dashboard
 data:
   VITE_API_HOSTNAME: {{ .Values.global.env.apiRootUrl | quote }}
-  VITE_WEBSOCKET_HOSTNAME: {{ .Values.global.env.websocketUrl | quote }}
+  {{- $websocketUrl := printf "http://localhost:%v" .Values.ws.port }}
+  {{- if .Values.ingress.enabled }}
+  {{- $websocketUrl = printf "%s://ws.%s" (ternary "https" "http" (not (empty .Values.ingress.tls))) .Values.ingress.host }}
+  {{- end }}
+  VITE_WEBSOCKET_HOSTNAME: {{ .Values.global.env.websocketUrl | default $websocketUrl | quote }}
