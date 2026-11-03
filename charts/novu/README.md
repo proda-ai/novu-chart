@@ -118,3 +118,5 @@ Keep existing JWT, encryption and Novu keys, provider credentials, database/Redi
 The [rendered Deployment diff](../../docs/UPGRADE-3.19-RENDER-DIFF.md) records image, port and effective environment changes against the pinned 2.1 chart.
 
 Image tags remain empty in values and follow Chart.appVersion. Renovate is enabled for this fork only for Novu Docker images, checks the API image's appVersion annotation and groups Novu Docker updates weekly without automerge. Verify all four image tags/digests exist and repeat migration/consumer review for each proposed server update.
+
+Review ownership: the PRODA Web App Squad (owners of Activity Centre, the only Novu bridge and inbox consumer) reviews every Renovate Novu PR within a week, runs the runbook's migration and consumer checks before approving, and schedules the EU staging → US staging → production rollout with the platform team, who own the cluster, Mongo backups and maintenance windows. Unreviewed Renovate PRs are not left open past the next weekly batch.
