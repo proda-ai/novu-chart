@@ -256,7 +256,14 @@
           "type": "object",
           "properties": {
             "nodeEnv": {
-              "type": "string"
+              "type": "string",
+              "enum": [
+                "dev",
+                "test",
+                "production",
+                "ci",
+                "local"
+              ]
             },
             "mongodb": {
               "type": "object",
@@ -360,7 +367,16 @@
               "type": "string"
             },
             "logLevel": {
-              "type": "string"
+              "type": "string",
+              "enum": [
+                "trace",
+                "debug",
+                "info",
+                "warn",
+                "error",
+                "fatal",
+                "none"
+              ]
             }
           }
         }

@@ -44,7 +44,7 @@ spec:
             - name: PORT
               value: {{ .Values.worker.port | quote }}
             - name: API_ROOT_URL
-              value: "http://{{ include "novu.api.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.api.port }}"
+              value: "http://{{ include "novu.api.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.api.port }}{{ with .Values.api.contextPath | trimAll "/" }}/{{ . }}{{ end }}"
             - name: BROADCAST_QUEUE_CHUNK_SIZE
               value: "{{ .Values.worker.broadcastQueueChunkSize }}"
             - name: MULTICAST_QUEUE_CHUNK_SIZE

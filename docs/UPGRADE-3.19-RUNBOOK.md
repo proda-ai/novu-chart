@@ -1,6 +1,6 @@
 # WEB-6859 / WEB-6857: Novu 2.1.0 → 3.19.0
 
-Status: rollout preparation only, 2026-11-02. Nothing has been merged, deployed or migrated. The owner schedules each maintenance window. Commit/push and creation of two **draft** PRs are a separate step. Replace `CHART_COMMIT_SHA` in the EU staging Application with the reviewed chart commit before making that draft deployable. Do not merge either PR as part of this task.
+Status: rollout preparation only, evidence refreshed 2026-11-03. This review performs no deployment or migration. The owner schedules each maintenance window. Companion `4e34fb2c1d4869ddba0f8c9a5b72a3e94e957483` pins chart `9a06f336197619d3388ed8ce331bcfa7f8177293`; repin the Application to the helper-committed chart containing this follow-up before rollout. Do not merge either PR as part of this task.
 
 ## Release and scope
 
@@ -30,9 +30,9 @@ Only `environments/staging/novu.yaml` changes in ArgoCD. US staging and both pro
 | WS | `ws:3.19.0`, 3002 | PORT and empty WS_CONTEXT_PATH; retain Socket.IO routing. |
 | Dashboard | `dashboard:3.19.0`, 4000 | Only public VITE_API_HOSTNAME and VITE_WEBSOCKET_HOSTNAME from its own ConfigMap. No server credentials or shared server env. |
 
-All servers receive IS_SELF_HOSTED=true, NOVU_ENTERPRISE=false, LOG_LEVEL=info, NEW_RELIC_ENABLED=false and explicit Mongo min/max pools 10/200 per process by default. EU staging explicitly overrides these to 10/50; that trial ceiling is not a production recommendation. API/worker also receive IS_V2_ENABLED=true and NOVU_SAFE_OUTBOUND_ALLOW. API idempotency, rate limiting and the new messages response format default to false. Keeping `api.newMessagesApiResponseEnabled=false` preserves `totalCount` and the prior `hasMore` calculation for `/v1/messages`. The pinned EU staging values explicitly set this flag to true; remove that override or set it to false before rollout unless consumer compatibility with the new response is separately accepted. Preserve NODE_ENV, Redis DB 2, credentials, S3 placeholders and MONGO_AUTO_CREATE_INDEXES=true after migration/index reconciliation. The fork's index behavior is application startup auto-indexing; there is no separate index Job in the baseline.
+All servers receive IS_SELF_HOSTED=true, NOVU_ENTERPRISE=false, LOG_LEVEL=info, NEW_RELIC_ENABLED=false and explicit Mongo min/max pools 10/200 per process by default. EU staging explicitly overrides these to 10/50; that trial ceiling is not a production recommendation. API/worker also receive IS_V2_ENABLED=true and NOVU_SAFE_OUTBOUND_ALLOW. API idempotency, rate limiting and the new messages response format default to false. Keeping `api.newMessagesApiResponseEnabled=false` preserves `totalCount` and the prior `hasMore` calculation for `/v1/messages`. The pinned EU staging values explicitly set this flag to true; remove that override or set it to false before rollout unless consumer compatibility with the new response is separately accepted. Preserve NODE_ENV, Redis DB 2, credentials and S3 placeholders. The pinned staging Application sets MONGO_AUTO_CREATE_INDEXES=false and worker.replicaCount=0; keep these barriers through migration/index reconciliation. Auto-indexing may be enabled only after index verification in a separately reviewed values change. The fork's index behavior is application startup auto-indexing; there is no separate index Job in the baseline.
 
-`global.env.safeOutboundAllow` defaults to empty (no SSRF exceptions). Before rollout, set it to the confirmed bridge's exact FQDN. The pinned companion aoa commit `c58b51404` references chart `28e4afa` and explicitly overrides it to `.svc.cluster.local`. **That companion revision is blocked for rollout.** Changing the chart default does not override environment values. A replacement companion commit must set `global.env.safeOutboundAllow` to the confirmed bridge FQDN and pin the reviewed chart commit containing these fixes. Verify both API and worker render exactly that host, and record the replacement companion/chart SHAs. Do not approve the current pin based on a successful Helm render. Entries are comma-separated hosts, suffixes, IPs or CIDRs, not URLs/paths. Never use `*` or allow all private networks. Keep `/audit-log-service-api/novu`, signing keys and NetworkPolicy reachability for API discovery and worker execution. See the [parser](https://github.com/novuhq/novu/blob/v3.19.0/packages/shared/src/utils/outbound-ssrf-allow-list.ts).
+`global.env.safeOutboundAllow` defaults to empty (no SSRF exceptions). Inventory all required private outbound destinations, including private SMTP as well as the bridge, and allow their exact FQDNs. Companion `4e34fb2c1` pins chart `9a06f33` and sets `staging-audit-log-service-service.audit-log-service.svc.cluster.local,mailpit.novu.svc.cluster.local`. Keep both entries: bridge-only guidance would break staging SMTP delivery. Verify that exact list in both API and worker renders and that the configured SMTP host uses the Mailpit FQDN. The broad `.svc.cluster.local` override has been removed. Repin the chart after these fixes are committed and record the replacement companion/chart SHAs; a successful Helm render does not satisfy migration or consumer gates. Entries are comma-separated hosts, suffixes, IPs or CIDRs, not URLs/paths. Never use `*` or allow all private networks. Keep `/audit-log-service-api/novu`, signing keys and NetworkPolicy reachability for API discovery, worker execution and SMTP. See the [parser](https://github.com/novuhq/novu/blob/v3.19.0/packages/shared/src/utils/outbound-ssrf-allow-list.ts).
 
 This implementation follows the requested dashboard rename: Helm `web` → `dashboard`, `ingress.web` → `ingress.dashboard`, Deployment/Service/Ingress `novu-web` → `novu-dashboard`, and EU staging `web.novu-staging.platform-services.proda.dev` → `dashboard.novu-staging.platform-services.proda.dev`. This deliberately differs from the research's proposed retention of the `web` identities. Verify DNS and issue the new `dashboard.novu-tls` certificate before opening traffic. Prune the obsolete web resources and `novu-web-env-config` during the scheduled sync after verifying the new route. The API/WS hosts, aliases, service names, ports and TLS secrets remain unchanged.
 
@@ -112,7 +112,7 @@ patch --dry-run --fuzz=0 -p1 < /tmp/novu-3.19-migrations.patch
 patch --fuzz=0 -p1 < /tmp/novu-3.19-migrations.patch
 ```
 
-Require a clean application with no offsets; record the patch checksum with the runner digest. Never execute the five affected stock scripts. The patched preference migration keeps the latest `updatedAt`, breaking ties by greatest `_id`, and rejects missing/invalid timestamps. Subscriber grouping includes both `contextKeysHash` (missing means `DEFAULT_CONTEXT`) and sorted `contextKeys` (missing means empty), so distinct contexts are not collapsed. Review/export each proposed survivor and its channel opt-outs before execution; reconcile exceptions explicitly rather than silently accepting a timestamp policy. Inconsistent context hashes/keys must be reconciled against the target schema before index creation. `$sortArray` requires MongoDB 5.2+; the scoped deployment uses 8.0.8, and other deployments must verify this prerequisite.
+Require a clean application with no offsets; record the patch checksum with the runner digest. Never execute the five affected stock scripts. The patched preference migration excludes soft-deleted rows; run the tombstone reconciliation below first. For live duplicates it keeps the latest `updatedAt`, breaking ties by greatest `_id`, and rejects missing/invalid timestamps. Subscriber grouping includes both `contextKeysHash` (missing means `DEFAULT_CONTEXT`) and sorted `contextKeys` (missing means empty), so distinct contexts are not collapsed. Review/export each proposed survivor and its channel opt-outs before execution; reconcile exceptions explicitly rather than silently accepting a timestamp policy. Inconsistent context hashes/keys must be reconciled against the target schema before index creation. `$sortArray` requires MongoDB 5.2+; the scoped deployment uses 8.0.8, and other deployments must verify this prerequisite.
 
 Preference-type failures are collected and then thrown after all types settle. Topic backfill/dedup batch failures, short deletes, invalid source links and remaining missing/duplicate identifiers fail the Job. Layout template update failures and remaining templates matching its migration filter also fail the Job. All five patched entrypoints await Mongo disconnect and explicitly exit 0/1. Rehearse success and injected write/cleanup failures for each, both full/final topic backfill and dedup batch paths, topic cursor/postcondition failures, layout update/postcondition failures, duplicate preferences with different contexts, tied/invalid timestamps and preserved opt-outs. Success must terminate; every injected failure must exit nonzero. The Job deadline below bounds bootstrap/cleanup hangs and must be sized from rehearsal; a deadline failure blocks progression.
 
@@ -176,11 +176,11 @@ Set PORT=3000, IS_SELF_HOSTED=true, NOVU_ENTERPRISE=false, IS_V2_ENABLED=true, b
 
 ### Complete new Mongo migration inventory and order
 
-Compared complete v2.1.0/v3.19.0 source trees under [`apps/api/migrations`](https://github.com/novuhq/novu/tree/v3.19.0/apps/api/migrations). These are the eight new executable Mongo scripts; `.spec.ts` files are tests. The legacy message cleanup below is an additional required data transformation, not one of those upstream scripts. Run it before the numbered migrations. All `pnpm` commands below run from `apps/api` in the runner.
+Compared complete v2.1.0/v3.19.0 source trees under [`apps/api/migrations`](https://github.com/novuhq/novu/tree/v3.19.0/apps/api/migrations). These are the eight new executable Mongo scripts; `.spec.ts` files are tests. The legacy message cleanup and preference tombstone reconciliation below are additional data steps, not upstream scripts. Complete them before the numbered migrations. All `pnpm` commands below run from `apps/api` in the runner.
 
 | Order | Path under migrations/ | Applicability and rerun behavior |
 | --- | --- | --- |
-| 1 | `preferences-uniqueness/preferences-uniqueness-migration.ts` | Required for conflicting duplicates among SUBSCRIBER_GLOBAL, SUBSCRIBER_WORKFLOW, USER_WORKFLOW and WORKFLOW_RESOURCE. Use the patched runner only: keeps latest `updatedAt` (greatest `_id` on ties), preserves distinct subscriber contexts and propagates failures. Destructive: review/export exact survivors and reconcile context metadata first. Idempotent on unchanged data. |
+| 1 | `preferences-uniqueness/preferences-uniqueness-migration.ts` | Required for conflicting duplicates among SUBSCRIBER_GLOBAL, SUBSCRIBER_WORKFLOW, USER_WORKFLOW and WORKFLOW_RESOURCE. Use the patched runner only: keeps latest `updatedAt` (greatest `_id` on ties), preserves distinct subscriber contexts and propagates failures. Destructive: reconcile tombstones, review/export exact live survivors and reconcile context metadata first. Idempotent on unchanged data. |
 | 2 | `001-add-default-identifier-to-topic-subscribers/add-default-identifier-to-topic-subscribers-migration.ts` | Required for existing topic links without identifier. Use the patched runner only. Missing-field filter is idempotent. Missing topicKey/externalSubscriberId, failed batches or remaining missing identifiers fail the Job; repair before proceeding. |
 | 3 | `002-remove-duplicate-identifiers/remove-duplicate-identifiers.ts` | Required when environment+identifier duplicates exist, after 001. Use the patched runner only: destructively keeps lowest `_id`; review survivors. Batch/cursor failures, short deletes and remaining duplicate groups fail the Job. Idempotent on unchanged data. |
 | 4 | `email-step-ui-schema-html-editor/email-step-ui-schema-html-editor-migration.ts` | Use the patched runner with explicit disconnect/exit. Required for email templates with controls.uiSchema; otherwise no-op. Repeated $set has the same content but can change timestamps. |
@@ -228,6 +228,53 @@ if (!result.acknowledged || result.matchedCount !== before.live || result.modifi
 ```
 
 The operation is idempotent with writers stopped: a completed rerun matches zero documents. A partial failure requires inspection before rerunning. Require zero remaining `deleted:false` messages, unchanged total/tombstone counts, and representative previously live messages visible through the 3.19 inbox and messages APIs. The pre-upgrade backup is the rollback source; never try to reverse this by setting `deleted:false` on all messages that lack the field.
+
+### Reconcile preference tombstones before deduplication
+
+The [3.19 preference schema](https://github.com/novuhq/novu/blob/v3.19.0/libs/dal/src/repositories/preferences/preferences.schema.ts) uniquely indexes `{_environmentId, _templateId, type}` for `USER_WORKFLOW` and `WORKFLOW_RESOURCE` without a `deleted` filter. The patched migration uses Mongoose's soft-delete filtering, so it cannot remove `deleted:true` rows that still occupy those keys. Do not choose a tombstone as a live survivor or unset its `deleted` field.
+
+With writers stopped and the backup verified, use raw `mongosh` collection queries (not the Mongoose repository) to inspect duplicate keys, including tombstones:
+
+```sh
+mongosh "$MONGO_URL" --quiet --eval '
+printjson(db.preferences.aggregate([
+  {$match: {type: {$in: ["USER_WORKFLOW", "WORKFLOW_RESOURCE"]}}},
+  {$group: {
+    _id: {env: "$_environmentId", template: "$_templateId", type: "$type"},
+    rows: {$push: {id: "$_id", deleted: "$deleted"}}, count: {$sum: 1}
+  }},
+  {$match: {count: {$gt: 1}}}
+]).toArray());
+'
+```
+
+Export the full documents for each collision group to the protected backup location, review live channel opt-outs separately, and record the exact tombstone IDs approved for physical deletion as an Extended JSON array in `/backup/preference-tombstone-ids.json`. Include all colliding tombstones; for tombstone-only groups, deletion must not create a live preference. Skip the deletion command when no tombstones need reconciliation. This manifest is specific to the selected database and maintenance snapshot; never reuse the rehearsal manifest on live data.
+
+```sh
+mongosh "$MONGO_URL" --quiet --eval '
+const ids = EJSON.parse(require("fs").readFileSync("/backup/preference-tombstone-ids.json", "utf8"));
+if (!Array.isArray(ids) || !ids.length || new Set(ids.map(id => id.toHexString())).size !== ids.length) {
+  throw new Error("Expected a nonempty reviewed array of distinct ObjectIds");
+}
+const preferences = db.getCollection("preferences");
+const types = {type: {$in: ["USER_WORKFLOW", "WORKFLOW_RESOURCE"]}};
+const filter = {...types, deleted: true, _id: {$in: ids}};
+const total = preferences.countDocuments({});
+const live = preferences.countDocuments({...types, deleted: {$ne: true}});
+if (preferences.countDocuments(filter) !== ids.length) {
+  throw new Error("Manifest does not match current workflow tombstones; stop and reconcile");
+}
+const result = preferences.deleteMany(filter);
+if (!result.acknowledged || result.deletedCount !== ids.length || preferences.countDocuments(filter) !== 0 ||
+    preferences.countDocuments({}) !== total - ids.length ||
+    preferences.countDocuments({...types, deleted: {$ne: true}}) !== live) {
+  throw new Error("Preference tombstone cleanup postcondition failed");
+}
+printjson({database: db.getName(), deleted: result.deletedCount, live});
+'
+```
+
+Run the patched live-preference deduplication next, then repeat the raw collision audit and require zero groups before creating indexes. Rehearse live+deleted and deleted+deleted collisions for both types, preserved live opt-outs, and manifest/deletion-count failures. Archive tombstones outside the application database; rollback restores the coordinated pre-upgrade backup. A partial deletion or failed postcondition blocks progression and requires a fresh inventory, not a blind rerun.
 
 ### Execute upstream migrations
 
@@ -300,7 +347,7 @@ for (const type of ["SUBSCRIBER_GLOBAL", "SUBSCRIBER_WORKFLOW", "USER_WORKFLOW",
 }'
 ```
 
-Confirm collection names against the inventory before interpreting results. Recheck the legacy message cleanup counts and saved live-message samples before opening traffic. Require zero unresolved missing topic identifiers/duplicate groups for the legacy dataset. Review null/empty identifiers separately. Compare deleted counts with reviewed survivor manifests and preserve representative preference values, including channel opt-outs. The audit uses the patched runner's context-aware grouping. Separately check the target unique index keys for collisions caused by inconsistent context hashes; reconcile those records without deleting valid distinct contexts.
+Confirm collection names against the inventory before interpreting results. Recheck the legacy message cleanup counts and saved live-message samples before opening traffic. Require zero unresolved missing topic identifiers/duplicate groups for the legacy dataset. Review null/empty identifiers separately. Require zero raw workflow preference collision groups, including `deleted:true` rows; the Mongoose migration alone cannot establish this. Compare deleted counts with reviewed tombstone and survivor manifests and preserve representative preference values, including channel opt-outs. The audit uses the patched runner's context-aware grouping. Separately check the target unique index keys for collisions caused by inconsistent context hashes; reconcile those records without deleting valid distinct contexts.
 
 For email UI fields compare affected template IDs and resulting body/editorType properties against the migration's exact $set values; check zero remaining templates matching the layout migration filter and inspect partial layouts. For agents require no missing behavior.subscriberAccess and correct managed/open versus restricted values. For Infobip verify only reviewed integration IDs were deactivated and no SendGrid flags or credentials changed. Confirm all other entity counts unchanged except approved deduplication, including organizations/environments/workflows/subscribers/topics.
 
@@ -317,9 +364,9 @@ Verify the loaded model list covers the target collections and every expected in
 ## Scheduled rollout and acceptance
 
 1. Repeat the maintenance barrier and validated backups with fresh live data. Execute the same reviewed migration commands and postconditions, with the same immutable runner images and indexes disabled. Reconcile indexes.
-2. With traffic blocked, deploy 3.19 API and WS first, worker held at zero replicas using an owner-controlled temporary values override. Start dashboard on its new host and verify DNS, certificate and IP restriction. Keep producers paused.
+2. With traffic blocked, deploy 3.19 API and WS first, worker held at zero replicas and auto-indexing disabled by the pinned staging values. Start dashboard on its new host and verify DNS, certificate and IP restriction. Keep producers paused.
 3. Run the existing Activity Centre workflow sync Job against the API. Preserve code-first workflow identifiers, bridge URL and signing key. Verify repeated sync is idempotent. Start the 3.19 worker, then run approved synthetic traffic. Never briefly start all components against unmigrated data through a normal unattended sync.
-4. All four deployments must pass startup/readiness/liveness: API/WS `/<contextPath>/v1/health-check` on 3000/3002 (or `/v1/health-check` with an empty context), worker `/v1/health-check` on 3004, dashboard `/` on 4000. API/WS context values are normalized by trimming surrounding slashes for both the environment and probes. Confirm process counts, Mongo pools, no E11000/SSRF/decryption errors, stable memory/restarts, queue drain and representative p95 latency.
+4. All four deployments must pass startup/readiness/liveness: API/WS `/<contextPath>/v1/health-check` on 3000/3002 (or `/v1/health-check` with an empty context), worker `/v1/health-check` on 3004, dashboard `/` on 4000. API/WS context values are normalized by trimming surrounding slashes for both the environment and probes. The worker internal API_ROOT_URL appends the same normalized API context path. Confirm process counts, Mongo pools, no E11000/SSRF/decryption errors, stable memory/restarts, queue drain and representative p95 latency.
 5. Complete the acceptance matrix below and attach evidence, expected/actual counts, logs, backup identifiers and restore timings. Open traffic only after owner acceptance. Prune obsolete frontend resources deliberately. Restore desired replica counts and reconcile overrides; leave future promotion manual.
 
 | Consumer | Required acceptance |

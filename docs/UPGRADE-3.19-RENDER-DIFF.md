@@ -1,20 +1,19 @@
 # Rendered Deployment changes
 
-WEB-6859, 2026-11-02. Baseline chart commit `b6f40fb6ab529119dd34bd47e6acaa16815240d9` with original EU staging values versus chart 0.3.0 with updated EU staging values. Release/namespace: `novu`. ConfigMap values are expanded; Secret values stay symbolic. Other regions are unchanged.
+WEB-6859, refreshed 2026-11-03. Baseline chart `b6f40fb6ab529119dd34bd47e6acaa16815240d9` with EU staging values from aoa `28759c19a` versus this chart 0.3.0 working tree with the exact `spec.source.helm.valuesObject` from `environments/staging/novu.yaml` at companion `4e34fb2c1d4869ddba0f8c9a5b72a3e94e957483`. That Application currently pins chart `9a06f336197619d3388ed8ce331bcfa7f8177293`; the working tree includes the subsequent consensus fixes and must be committed by the helper and repinned before rollout. Release/namespace: `novu`. ConfigMap values are expanded; Secret values stay symbolic. Other regions are unchanged.
 
-Validation: default and staging `helm lint` pass; baseline and updated `helm template` pass. All four image/port/probe configurations, Service selectors/targets, checksum annotations, dashboard-only IP/CSP annotations, unchanged Mongo/Redis StatefulSet specs (excluding the existing randomly generated Redis Secret checksum) and unchanged application Secret data were checked. No migration Job is rendered. A changed config/Secret was rendered to verify rollout checksums change; a dashboard TLS override preserved API/WS TLS. The worker-paused render (`worker.replicaCount=0`) also passes. Renovate config passes its official JSON schema. Actual dashboard image output matches the staging CSP hash. Live compatibility, migrations and capacity remain rollout gates.
+Validation: default and exact staging `helm lint` and `helm template` pass; the baseline also renders. Render assertions check all four images/ports/probes, server flags, dashboard VITE-only environment, exact API/worker outbound exceptions, disabled staging auto-indexing, worker replicas zero, Service selectors/targets, dashboard IP allowlist, unchanged application Secret data and unchanged Mongo/Redis StatefulSet specs (excluding the existing randomly generated Redis Secret checksum). No migration Job is rendered. Additional renders verify worker API_ROOT_URL and API probes share the normalized context path; invalid LOG_LEVEL=INFO and NODE_ENV=staging are rejected. Live compatibility, migrations, CSP/browser behavior and capacity remain rollout gates in the [runbook](UPGRADE-3.19-RUNBOOK.md).
 
-Consensus follow-up, 2026-11-03: default and exact pinned EU staging values pass `helm lint` and `helm template`. Additional render checks cover API/WS context paths, rejection of `ingress.web`, the default false versus staging true messages-response flag, and preservation of the dashboard IP allowlist. The five-script patch applies without offsets/fuzz to v3.19.0. Isolated mocks exercise migration success/failure exits and legacy message cleanup; they do not replace runner builds or restored-Mongo rehearsal.
+The pinned staging allowlist is `staging-audit-log-service-service.audit-log-service.svc.cluster.local,mailpit.novu.svc.cluster.local`, covering the bridge and private SMTP. It replaces the broad suffix exception. Mongo pools remain 10/50, MONGO_AUTO_CREATE_INDEXES is false, and worker replicas remain zero until migration/index verification and the controlled worker start. These are staging overrides: chart defaults remain an empty allowlist, pools 10/200, auto-indexing true and one worker. Production pool sizing requires the runbook's capacity review.
 
-Review follow-up: the chart default SSRF allowlist is now empty, its Mongo maximum remains 200 (minimum 10), and an unset websocket URL derives from ingress host/TLS or falls back to localhost only without ingress. The EU staging values in `aoa-novu-3-19/environments/staging/novu.yaml` explicitly set `.svc.cluster.local`, Mongo 10/50 and the public websocket URL, so their effective Deployment diff below is unchanged. Companion commit `c58b51404` pins chart `28e4afa` and remains blocked for rollout: replace that staging SSRF override with the confirmed bridge FQDN, repin the fixed chart in a new companion commit, and verify the exact host in both API/worker renders. The broad exception below records the current input; it is not an approved deployment configuration. Production pool sizing requires the runbook's explicit capacity review.
-
-The chart now defaults `api.newMessagesApiResponseEnabled` to false to retain `totalCount` and the prior `hasMore` calculation. Staging explicitly opts in with true, so the flag below remains true; remove that override unless the response change is separately accepted. API/WS probe paths now honor their normalized context paths (empty in this staging input). `ingress.web` is rejected by schema validation; migrate every override, including the IP allowlist, to `ingress.dashboard`.
+The chart defaults `api.newMessagesApiResponseEnabled` to false to retain `totalCount` and the prior `hasMore` calculation. Staging explicitly opts in with true; remove that override unless the response change is separately accepted. API/WS probes and worker API routing honor normalized context paths (empty in this staging input). `ingress.web` must be migrated to `ingress.dashboard` with its IP allowlist.
 
 ```diff
---- b6f40fb / original staging values
-+++ 0.3.0 / updated staging values
-@@ -1,26 +1,35 @@
+--- b6f40fb / EU staging values at aoa 28759c19a
++++ 0.3.0 working tree / EU staging values at aoa 4e34fb2c1
+@@ -1,27 +1,36 @@
  - deployment: novu-api
+   replicas: 1
 -  image: ghcr.io/novuhq/novu/api:2.1.0
 +  image: ghcr.io/novuhq/novu/api:3.19.0
    ports:
@@ -37,9 +36,10 @@ The chart now defaults `api.newMessagesApiResponseEnabled` to false to retain `t
 +    IS_SELF_HOSTED: 'true'
 +    IS_V2_ENABLED: 'true'
      JWT_SECRET: <Secret novu-secret:JWT_SECRET>
-+    LOG_LEVEL: info
-     MONGO_AUTO_CREATE_INDEXES: 'true'
+-    MONGO_AUTO_CREATE_INDEXES: 'true'
 -    MONGO_MAX_POOL_SIZE: '200'
++    LOG_LEVEL: info
++    MONGO_AUTO_CREATE_INDEXES: 'false'
 +    MONGO_MAX_POOL_SIZE: '50'
 +    MONGO_MIN_POOL_SIZE: '10'
      MONGO_URL: <Secret novu-mongodb-svcbind-root:uri>
@@ -48,7 +48,7 @@ The chart now defaults `api.newMessagesApiResponseEnabled` to false to retain `t
      NEW_RELIC_LICENSE_KEY: <Secret novu-secret:NEW_RELIC_LICENSE_KEY>
      NODE_ENV: production
 +    NOVU_ENTERPRISE: 'false'
-+    NOVU_SAFE_OUTBOUND_ALLOW: .svc.cluster.local
++    NOVU_SAFE_OUTBOUND_ALLOW: staging-audit-log-service-service.audit-log-service.svc.cluster.local,mailpit.novu.svc.cluster.local
      NOVU_SECRET_KEY: <Secret novu-secret:NOVU_SECRET_KEY>
      PORT: '3000'
 -    REACT_APP_API_URL: https://api.novu-staging.platform-services.proda.dev
@@ -56,14 +56,16 @@ The chart now defaults `api.newMessagesApiResponseEnabled` to false to retain `t
      REDIS_CACHE_SERVICE_HOST: novu-redis-master
      REDIS_CACHE_SERVICE_PORT: '6379'
      REDIS_DB_INDEX: '2'
-@@ -32,27 +41,34 @@
+@@ -33,28 +42,35 @@
      S3_REGION: eu-west-2
      SENTRY_DSN: <Secret novu-secret:SENTRY_DSN>
      STORE_ENCRYPTION_KEY: <Secret novu-secret:STORE_ENCRYPTION_KEY>
 +    WIDGET_BASE_URL: ''
  - deployment: novu-worker
+-  replicas: 1
 -  image: ghcr.io/novuhq/novu/worker:2.1.0
 -  ports: []
++  replicas: 0
 +  image: ghcr.io/novuhq/novu/worker:3.19.0
 +  ports:
 +  - name: http
@@ -79,9 +81,10 @@ The chart now defaults `api.newMessagesApiResponseEnabled` to false to retain `t
 +    IS_SELF_HOSTED: 'true'
 +    IS_V2_ENABLED: 'true'
      JWT_SECRET: <Secret novu-secret:JWT_SECRET>
-+    LOG_LEVEL: info
-     MONGO_AUTO_CREATE_INDEXES: 'true'
+-    MONGO_AUTO_CREATE_INDEXES: 'true'
 -    MONGO_MAX_POOL_SIZE: '200'
++    LOG_LEVEL: info
++    MONGO_AUTO_CREATE_INDEXES: 'false'
 +    MONGO_MAX_POOL_SIZE: '50'
 +    MONGO_MIN_POOL_SIZE: '10'
      MONGO_URL: <Secret novu-mongodb-svcbind-root:uri>
@@ -91,7 +94,7 @@ The chart now defaults `api.newMessagesApiResponseEnabled` to false to retain `t
      NEW_RELIC_LICENSE_KEY: <Secret novu-secret:NEW_RELIC_LICENSE_KEY>
      NODE_ENV: production
 +    NOVU_ENTERPRISE: 'false'
-+    NOVU_SAFE_OUTBOUND_ALLOW: .svc.cluster.local
++    NOVU_SAFE_OUTBOUND_ALLOW: staging-audit-log-service-service.audit-log-service.svc.cluster.local,mailpit.novu.svc.cluster.local
      NOVU_SECRET_KEY: <Secret novu-secret:NOVU_SECRET_KEY>
 -    REACT_APP_API_URL: https://api.novu-staging.platform-services.proda.dev
 -    REACT_APP_ENVIRONMENT: production
@@ -99,10 +102,10 @@ The chart now defaults `api.newMessagesApiResponseEnabled` to false to retain `t
      REDIS_CACHE_SERVICE_HOST: novu-redis-master
      REDIS_CACHE_SERVICE_PORT: '6379'
      REDIS_DB_INDEX: '2'
-@@ -65,26 +81,28 @@
-     SENTRY_DSN: <Secret novu-secret:SENTRY_DSN>
+@@ -68,26 +84,28 @@
      STORE_ENCRYPTION_KEY: <Secret novu-secret:STORE_ENCRYPTION_KEY>
  - deployment: novu-ws
+   replicas: 1
 -  image: ghcr.io/novuhq/novu/ws:2.1.0
 +  image: ghcr.io/novuhq/novu/ws:3.19.0
    ports:
@@ -117,9 +120,10 @@ The chart now defaults `api.newMessagesApiResponseEnabled` to false to retain `t
      AWS_SECRET_ACCESS_KEY: <Secret novu-secret:AWS_SECRET_ACCESS_KEY>
 +    IS_SELF_HOSTED: 'true'
      JWT_SECRET: <Secret novu-secret:JWT_SECRET>
-+    LOG_LEVEL: info
-     MONGO_AUTO_CREATE_INDEXES: 'true'
+-    MONGO_AUTO_CREATE_INDEXES: 'true'
 -    MONGO_MAX_POOL_SIZE: '200'
++    LOG_LEVEL: info
++    MONGO_AUTO_CREATE_INDEXES: 'false'
 +    MONGO_MAX_POOL_SIZE: '50'
 +    MONGO_MIN_POOL_SIZE: '10'
      MONGO_URL: <Secret novu-mongodb-svcbind-root:uri>
@@ -135,13 +139,14 @@ The chart now defaults `api.newMessagesApiResponseEnabled` to false to retain `t
      REDIS_CACHE_SERVICE_HOST: novu-redis-master
      REDIS_CACHE_SERVICE_PORT: '6379'
      REDIS_DB_INDEX: '2'
-@@ -97,31 +115,11 @@
+@@ -100,32 +118,12 @@
      SENTRY_DSN: <Secret novu-secret:SENTRY_DSN>
      STORE_ENCRYPTION_KEY: <Secret novu-secret:STORE_ENCRYPTION_KEY>
      WS_CONTEXT_PATH: ''
 -- deployment: novu-web
--  image: ghcr.io/novuhq/novu/web:2.1.0
 +- deployment: novu-dashboard
+   replicas: 1
+-  image: ghcr.io/novuhq/novu/web:2.1.0
 +  image: ghcr.io/novuhq/novu/dashboard:3.19.0
    ports:
 -  - containerPort: 4200
