@@ -3,5 +3,29 @@
   "extends": [
     "config:recommended",
     "customManagers:helmChartYamlAppVersions"
+  ],
+  "forkProcessing": "enabled",
+  "timezone": "Europe/Warsaw",
+  "packageRules": [
+    {
+      "matchPackageNames": [
+        "*"
+      ],
+      "enabled": false
+    },
+    {
+      "matchDatasources": [
+        "docker"
+      ],
+      "matchPackageNames": [
+        "ghcr.io/novuhq/novu/**"
+      ],
+      "enabled": true,
+      "groupName": "Novu server images",
+      "schedule": [
+        "* 0-4 * * 1"
+      ],
+      "automerge": false
+    }
   ]
 }

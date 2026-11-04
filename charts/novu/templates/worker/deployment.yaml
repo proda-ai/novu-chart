@@ -28,12 +28,23 @@ spec:
         - name: worker
           image: "{{ .Values.worker.image.repository }}:{{ .Values.worker.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.worker.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.worker.port }}
           envFrom:
             - configMapRef:
                 name: {{ include "novu.fullname" . }}-config
             - secretRef:
                 name: {{ include "novu.fullname" . }}-secret
           env:
+            - name: IS_V2_ENABLED
+              value: {{ .Values.global.env.isV2Enabled | quote }}
+            - name: NOVU_SAFE_OUTBOUND_ALLOW
+              value: {{ .Values.global.env.safeOutboundAllow | quote }}
+            - name: PORT
+              value: {{ .Values.worker.port | quote }}
+            - name: API_ROOT_URL
+              value: "http://{{ include "novu.api.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.api.port }}{{ with .Values.api.contextPath | trimAll "/" }}/{{ . }}{{ end }}"
             - name: BROADCAST_QUEUE_CHUNK_SIZE
               value: "{{ .Values.worker.broadcastQueueChunkSize }}"
             - name: MULTICAST_QUEUE_CHUNK_SIZE
@@ -50,4 +61,24 @@ spec:
                   key: uri
           resources:
             {{- toYaml .Values.worker.resources | nindent 12 }}
+          startupProbe:
+            httpGet:
+              path: /v1/health-check
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /v1/health-check
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /v1/health-check
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
       restartPolicy: Always

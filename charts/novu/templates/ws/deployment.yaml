@@ -29,7 +29,8 @@ spec:
           image: "{{ .Values.ws.image.repository }}:{{ .Values.ws.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.ws.image.pullPolicy }}
           ports:
-            - containerPort: 3002
+            - name: http
+              containerPort: {{ .Values.ws.port }}
           envFrom:
             - configMapRef:
                 name: {{ include "novu.fullname" . }}-config
@@ -39,7 +40,7 @@ spec:
             - name: PORT
               value: "{{ .Values.ws.port }}"
             - name: WS_CONTEXT_PATH
-              value: "{{ .Values.ws.contextPath }}"
+              value: {{ .Values.ws.contextPath | trimAll "/" | quote }}
             - name: REDIS_PASSWORD
               valueFrom:
                 secretKeyRef:
@@ -52,4 +53,24 @@ spec:
                   key: uri
           resources:
             {{- toYaml .Values.ws.resources | nindent 12 }}
+          startupProbe:
+            httpGet:
+              path: {{ printf "%s/v1/health-check" (printf "/%s" (.Values.ws.contextPath | trimAll "/") | trimSuffix "/") | quote }}
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: {{ printf "%s/v1/health-check" (printf "/%s" (.Values.ws.contextPath | trimAll "/") | trimSuffix "/") | quote }}
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: {{ printf "%s/v1/health-check" (printf "/%s" (.Values.ws.contextPath | trimAll "/") | trimSuffix "/") | quote }}
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
       restartPolicy: Always
