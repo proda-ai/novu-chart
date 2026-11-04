@@ -1,16 +1,16 @@
 # Rendered Deployment changes
 
-WEB-6859, refreshed 2026-11-03. Baseline chart `b6f40fb6ab529119dd34bd47e6acaa16815240d9` with EU staging values from aoa `28759c19a` versus this chart 0.3.0 working tree with the exact `spec.source.helm.valuesObject` from `environments/staging/novu.yaml` at companion `4e34fb2c1d4869ddba0f8c9a5b72a3e94e957483`. That Application currently pins chart `9a06f336197619d3388ed8ce331bcfa7f8177293`; the working tree includes the subsequent consensus fixes and must be committed by the helper and repinned before rollout. Release/namespace: `novu`. ConfigMap values are expanded; Secret values stay symbolic. Other regions are unchanged.
+WEB-6859, refreshed 2026-11-04. Baseline chart `b6f40fb6ab529119dd34bd47e6acaa16815240d9` with the EU staging values from argocd-app-of-apps `main` versus this chart 0.3.0 with the exact `spec.source.helm.valuesObject` from `environments/staging/novu.yaml` in [argocd-app-of-apps #8848](https://github.com/proda-ai/argocd-app-of-apps/pull/8848).
 
 Validation: default and exact staging `helm lint` and `helm template` pass; the baseline also renders. Render assertions check all four images/ports/probes, server flags, dashboard VITE-only environment, exact API/worker outbound exceptions, disabled staging auto-indexing, worker replicas zero, Service selectors/targets, dashboard IP allowlist, unchanged application Secret data and unchanged Mongo/Redis StatefulSet specs (excluding the existing randomly generated Redis Secret checksum). No migration Job is rendered. Additional renders verify worker API_ROOT_URL and API probes share the normalized context path; invalid LOG_LEVEL=INFO and NODE_ENV=staging are rejected. Live compatibility, migrations, CSP/browser behavior and capacity remain rollout gates in the [runbook](UPGRADE-3.19-RUNBOOK.md).
 
 The pinned staging allowlist is `staging-audit-log-service-service.audit-log-service.svc.cluster.local,mailpit.novu.svc.cluster.local`, covering the bridge and private SMTP. It replaces the broad suffix exception. Mongo pools remain 10/50, MONGO_AUTO_CREATE_INDEXES is false, and worker replicas remain zero until migration/index verification and the controlled worker start. These are staging overrides: chart defaults remain an empty allowlist, pools 10/200, auto-indexing true and one worker. Production pool sizing requires the runbook's capacity review.
 
-The chart defaults `api.newMessagesApiResponseEnabled` to false to retain `totalCount` and the prior `hasMore` calculation. Staging explicitly opts in with true; remove that override unless the response change is separately accepted. API/WS probes and worker API routing honor normalized context paths (empty in this staging input). `ingress.web` must be migrated to `ingress.dashboard` with its IP allowlist.
+The chart defaults `api.newMessagesApiResponseEnabled` to false to retain `totalCount` and the prior `hasMore` calculation. Staging keeps it false; enabling the new response format is a separate, consumer-reviewed change. API/WS probes and worker API routing honor normalized context paths (empty in this staging input). `ingress.web` must be migrated to `ingress.dashboard` with its IP allowlist.
 
 ```diff
---- b6f40fb / EU staging values at aoa 28759c19a
-+++ 0.3.0 working tree / EU staging values at aoa 4e34fb2c1
+--- b6f40fb / EU staging values at argocd-app-of-apps main
++++ 0.3.0 / EU staging values in argocd-app-of-apps #8848
 @@ -1,27 +1,36 @@
  - deployment: novu-api
    replicas: 1
@@ -32,7 +32,7 @@ The chart defaults `api.newMessagesApiResponseEnabled` to false to retain `total
 +    FRONT_BASE_URL: https://dashboard.novu-staging.platform-services.proda.dev
 +    IS_API_IDEMPOTENCY_ENABLED: 'false'
 +    IS_API_RATE_LIMITING_ENABLED: 'false'
-+    IS_NEW_MESSAGES_API_RESPONSE_ENABLED: 'true'
++    IS_NEW_MESSAGES_API_RESPONSE_ENABLED: 'false'
 +    IS_SELF_HOSTED: 'true'
 +    IS_V2_ENABLED: 'true'
      JWT_SECRET: <Secret novu-secret:JWT_SECRET>
