@@ -12,7 +12,7 @@ L4 changes only the Novu child Application: immutable chart/runner pins, `upgrad
 
 Supply an existing test subscriber, its environment application identifier and an existing Secret holding that environment's API key through `upgrade.smoke.*`. The smoke does not provision fixtures. Preserve `JWT_SECRET`, `NOVU_SECRET_KEY`, environment API keys, the exact 32-byte `STORE_ENCRYPTION_KEY`, integration IDs and provider credentials. Keep the bridge/Mailpit outbound allowlist, old messages response shape, Redis DB/config, Mongo standalone topology and PVCs. No real SendGrid delivery is part of automated smoke.
 
-Preflight must confirm the exact L1 workload names: Deployments `novu-api`, `novu-worker`, `novu-ws`; StatefulSets `novu-mongodb`, `novu-redis-master`; Mongo major 8, Redis major 7, single master. Preserve Mongo chart 16.5.1 and Redis chart 20.13.4. Confirm 40Gi work space fits the compressed archives plus restored Mongo/Redis copies; tune resource budgets from rehearsal. Prepare [R1](R1-RESTORE.md) before arming.
+Preflight must confirm the exact L1 workload names: Deployments `novu-api`, `novu-worker`, `novu-ws`; StatefulSets `novu-mongodb-mongodb`, `novu-redis-master`; Mongo major 8, Redis major 7, single master. Preserve Mongo chart 16.5.1 and Redis chart 20.13.4. Confirm 40Gi work space fits the compressed archives plus restored Mongo/Redis copies; tune resource budgets from rehearsal. Prepare [R1](R1-RESTORE.md) before arming.
 
 ## Execution and receipts
 
