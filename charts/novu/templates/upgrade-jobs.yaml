@@ -1,0 +1,153 @@
+{{- if .Values.upgrade.enabled }}
+{{- if ne .Release.Namespace "novu" }}{{ fail "Upgrade hooks are scoped to namespace novu" }}{{- end }}
+{{- if ne (include "novu.fullname" .) "novu" }}{{ fail "Upgrade hooks require release fullname novu to match L1 RBAC" }}{{- end }}
+{{- if ne .Values.upgrade.mode "upgrade" }}{{ fail "Restore uses R1's old chart plus standalone restore Jobs; never render 3.19 workloads in restore mode" }}{{- end }}
+{{- if .Values.global.env.mongodb.autoCreateIndexes }}{{ fail "Upgrade requires global.env.mongodb.autoCreateIndexes=false" }}{{- end }}
+{{- $image := required "upgrade.image requires an immutable runner digest" .Values.upgrade.image }}
+{{- if not (regexMatch "^[^[:space:]]+@sha256:[a-f0-9]{64}$" $image) }}{{ fail "upgrade.image must use @sha256" }}{{- end }}
+{{- $operation := required "upgrade.operationId is required" .Values.upgrade.operationId }}
+{{- $attempt := required "upgrade.attemptId is required" .Values.upgrade.attemptId }}
+{{- $revision := required "upgrade.syncRevision is a full reviewed Argo source SHA" .Values.upgrade.syncRevision }}
+{{- $subscriber := required "upgrade.smoke.subscriberId is required" .Values.upgrade.smoke.subscriberId }}
+{{- $application := required "upgrade.smoke.applicationIdentifier is required" .Values.upgrade.smoke.applicationIdentifier }}
+{{- $smokeSecret := required "upgrade.smoke.apiKeySecretName is required" .Values.upgrade.smoke.apiKeySecretName }}
+{{- $steps := list
+  (dict "name" "quiesce" "phase" "PreSync" "wave" "-60")
+  (dict "name" "backup" "phase" "PreSync" "wave" "-50")
+  (dict "name" "verify" "phase" "PreSync" "wave" "-40")
+  (dict "name" "precheck" "phase" "PreSync" "wave" "-30")
+  (dict "name" "migrate" "phase" "PreSync" "wave" "-20")
+  (dict "name" "reconcile-indexes" "phase" "PreSync" "wave" "-10")
+  (dict "name" "smoke" "phase" "PostSync" "wave" "10")
+  (dict "name" "failure" "phase" "SyncFail" "wave" "0") }}
+{{- range $step := $steps }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: novu-upgrade-{{ $step.name }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "novu.labels" $ | nindent 4 }}
+    tags.datadoghq.com/env: staging
+    tags.datadoghq.com/service: novu-upgrade
+  annotations:
+    argocd.argoproj.io/hook: {{ $step.phase }}
+    argocd.argoproj.io/sync-wave: {{ $step.wave | quote }}
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: {{ index $.Values.upgrade.deadlines $step.name }}
+  template:
+    metadata:
+      labels:
+        tags.datadoghq.com/env: staging
+        tags.datadoghq.com/service: novu-upgrade
+      annotations:
+        ad.datadoghq.com/runner.logs: '[{"source":"nodejs","service":"novu-upgrade"}]'
+    spec:
+      serviceAccountName: {{ $.Values.upgrade.serviceAccountName }}
+      automountServiceAccountToken: true
+      restartPolicy: Never
+      nodeSelector:
+        kubernetes.io/arch: amd64
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+      {{- with $.Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: runner
+          image: {{ $image | quote }}
+          imagePullPolicy: IfNotPresent
+          args: [{{ $step.name | quote }}]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            {{- toYaml $.Values.upgrade.resources | nindent 12 }}
+          env:
+            - name: OPERATION_ID
+              value: {{ $operation | quote }}
+            - name: ATTEMPT_ID
+              value: {{ $attempt | quote }}
+            - name: SYNC_REVISION
+              value: {{ $revision | quote }}
+            - name: RUNNER_IMAGE
+              value: {{ $image | quote }}
+            - name: BACKUP_BUCKET
+              value: {{ $.Values.upgrade.bucket | quote }}
+            - name: STATE_CONFIGMAP
+              value: {{ $.Values.upgrade.operationStateName | quote }}
+            - name: MODE
+              value: upgrade
+            - name: WORK_DIR
+              value: /work
+            - name: INFOBIP_INTEGRATION_IDS_JSON
+              value: {{ $.Values.upgrade.infobipIntegrationIds | toJson | quote }}
+            - name: INDEX_DROPS_JSON
+              value: {{ $.Values.upgrade.indexDrops | toJson | quote }}
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: MONGO_URL
+              valueFrom:
+                secretKeyRef:
+                  name: novu-mongodb-svcbind-root
+                  key: uri
+            - name: REDIS_HOST
+              value: novu-redis-master
+            - name: REDIS_PORT
+              value: {{ $.Values.redis.master.service.ports.redis | quote }}
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: novu-redis
+                  key: redis-password
+            - name: STORE_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: novu-secret
+                  key: STORE_ENCRYPTION_KEY
+            - name: MONGO_AUTO_CREATE_INDEXES
+              value: "false"
+            - name: MIGRATION
+              value: "true"
+            - name: SMOKE_SUBSCRIBER_ID
+              value: {{ $subscriber | quote }}
+            - name: SMOKE_APPLICATION_IDENTIFIER
+              value: {{ $application | quote }}
+            - name: SMOKE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $smokeSecret | quote }}
+                  key: {{ $.Values.upgrade.smoke.apiKeySecretKey | quote }}
+            - name: API_URL
+              value: {{ printf "http://novu-api:%v%s" $.Values.api.port (printf "/%s" ($.Values.api.contextPath | trimAll "/") | trimSuffix "/") | quote }}
+            - name: WS_URL
+              value: {{ printf "http://novu-ws:%v%s" $.Values.ws.port (printf "/%s" ($.Values.ws.contextPath | trimAll "/") | trimSuffix "/") | quote }}
+          volumeMounts:
+            - name: work
+              mountPath: /work
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: work
+          emptyDir:
+            sizeLimit: {{ $.Values.upgrade.workVolumeSize }}
+        - name: tmp
+          emptyDir:
+            sizeLimit: 128Mi
+{{- end }}
+{{- end }}

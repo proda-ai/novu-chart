@@ -114,3 +114,40 @@ mongodb:
     repository: bitnamilegacy/mongodb
   serviceBindings:
     enabled: true
+
+upgrade:
+  enabled: false
+  image: ""
+  bucket: proda-staging-636c0f80-novu-upgrade
+  serviceAccountName: novu-upgrade
+  operationStateName: novu-upgrade-state
+  operationId: ""
+  attemptId: ""
+  syncRevision: ""
+  mode: upgrade
+  indexDrops: []
+  infobipIntegrationIds: []
+  workVolumeSize: 40Gi
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+      ephemeral-storage: 10Gi
+    limits:
+      cpu: "2"
+      memory: 4Gi
+      ephemeral-storage: 45Gi
+  deadlines:
+    quiesce: 300
+    backup: 600
+    verify: 900
+    precheck: 300
+    migrate: 900
+    reconcile-indexes: 600
+    smoke: 180
+    failure: 300
+  smoke:
+    subscriberId: ""
+    applicationIdentifier: ""
+    apiKeySecretName: ""
+    apiKeySecretKey: api-key
