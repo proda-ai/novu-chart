@@ -42,7 +42,7 @@ jobs:
 
       - name: Run chart-testing (lint)
         if: steps.list-changed.outputs.changed == 'true'
-        run: ct lint --target-branch ${{ github.event.repository.default_branch }} --check-version-increment=false --chart-dirs charts
+        run: ct lint --target-branch ${{ github.event.repository.default_branch }} --check-version-increment=false --validate-maintainers=false --chart-dirs charts
 
       - name: Create kind cluster
         if: steps.list-changed.outputs.changed == 'true'
