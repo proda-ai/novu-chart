@@ -46,6 +46,15 @@
       },
       "required": ["type"]
     },
+    "secret": {
+      "type": "object",
+      "properties": {
+        "create": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
     "web": {
       "type": "object",
       "description": "Frontend web component",
