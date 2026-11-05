@@ -12,6 +12,9 @@ ingress:
 service:
   type: ClusterIP
 
+secret:
+  create: true
+
 dashboard:
   replicaCount: 1
   image:

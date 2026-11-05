@@ -57,6 +57,15 @@
         "type"
       ]
     },
+    "secret": {
+      "type": "object",
+      "properties": {
+        "create": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
     "dashboard": {
       "type": "object",
       "description": "Frontend dashboard component",
