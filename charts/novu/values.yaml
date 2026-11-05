@@ -1,7 +1,7 @@
 ingress:
   enabled: false
   className: ""
-  annotations: { }
+  annotations: {}
   host: chart-example.local
   tls:
     secretName: novu-tls
@@ -34,7 +34,7 @@ api:
     pullPolicy: IfNotPresent
     tag: ""
   port: 3000
-  resources: { }
+  resources: {}
   contextPath: ""
   idempotencyEnabled: false
   rateLimitingEnabled: false
@@ -48,7 +48,7 @@ worker:
     repository: ghcr.io/novuhq/novu/worker
     pullPolicy: IfNotPresent
     tag: ""
-  resources: { }
+  resources: {}
   broadcastQueueChunkSize: 100
   multicastQueueChunkSize: 100
 
@@ -60,10 +60,10 @@ ws:
     tag: ""
   port: 3002
   contextPath: ""
-  resources: { }
+  resources: {}
 
 global:
-  imagePullSecrets: [ ]
+  imagePullSecrets: []
   security:
     allowInsecureImages: true
   env:
