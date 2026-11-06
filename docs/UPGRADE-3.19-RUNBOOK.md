@@ -14,22 +14,45 @@ Supply an existing test subscriber and its environment application identifier th
 
 Preflight must confirm the exact L1 workload names: Deployments `novu-api`, `novu-worker`, `novu-ws`; StatefulSets `novu-mongodb-mongodb`, `novu-redis-master`; Mongo major 8, Redis major 7, single master. Preserve Mongo chart 16.5.1 and Redis chart 20.13.4. Confirm 40Gi work space fits the compressed archives plus restored Mongo/Redis copies; tune resource budgets from rehearsal. Prepare [R1](R1-RESTORE.md) before arming.
 
+## First activation
+
+First activation uses `upgrade.indexDrops` pre-filled from the Novu 2.1 schema:
+
+```yaml
+upgrade:
+  indexDrops:
+    - collection: subscribers
+      name: subscriberId_1__environmentId_1
+      definitionSha256: e1f3b69204c2bd48663e2597e7a0917aa8f836afede8fe44dd8a69733594627a
+    - collection: preferences
+      name: _environmentId_1__templateId_1_type_1
+      definitionSha256: f0b9477871d216902f35e20e311e7d508d98f6575e649d9923066820e475befb
+```
+
+Quiesce audits live indexes before recording `maintenanceStarted` and stopping writers. If live definitions differ or another unapproved conflict exists, the Job fails with writers still up. Its failure log and evidence contain every conflicting index's collection, live name, exact normalized definition JSON and hash, plus a paste-able `indexDrops` array. Read it with:
+
+```sh
+kubectl -n novu logs job/novu-upgrade-quiesce --all-containers=true
+```
+
+Copy the printed `indexDrops` entries into `spec.source.helm.valuesObject.upgrade.indexDrops` in `argocd-app-of-apps/environments/staging/novu.yaml`, review the definitions and approvals, set a fresh `attemptId`, and re-sync after the parent reconciles the corrected values. Archive the failed Job's logs first. Argo CD 2.13.2 also runs SyncFail for a failed PreSync Job; before maintenance, that hook records failure without scaling writers and permits a corrected attempt to claim ownership. The later precheck repeats the index audit after backup verification.
+
 ## Execution and receipts
 
 | Hook | Wave | Deadline | Result |
 | --- | ---: | ---: | --- |
-| PreSync quiesce | -60 | 300s | Scale API/worker/WS to zero and wait for Pod deletion. |
+| PreSync quiesce | -60 | 300s | Audit index approvals with writers up; record maintenance start, then scale API/worker/WS to zero and wait for Pod deletion. |
 | PreSync backup | -50 | 600s | Pause Mongo TTL; dump all databases, snapshot Redis RDB and upload checksummed manifest. |
 | PreSync verify | -40 | 900s | Download exact generations; restore on disposable loopback mongod; compare counts/options/indexes; check/load RDB. |
 | PreSync precheck | -30 | 300s | Prove centralization unnecessary; reject collisions and invalid legacy/context/layout data. |
 | PreSync migrate | -20 | 900s | Apply ordered pinned contracts and verify counts and complete value fingerprints. |
 | PreSync reconcile-indexes | -10 | 600s | Apply only approved named drops; create/verify target DAL indexes. |
 | PostSync smoke | 10 | 180s | API/WS health, seven active external workflows and valid HMAC inbox session; restore original TTL setting. |
-| SyncFail failure | 0 | 300s | Stop writers, record contained failure, retain data for R1. |
+| SyncFail failure | 0 | 300s | Record failure; stop writers only if the owner started maintenance; retain data for R1. |
 
 Deadlines are upper bounds, not a measured downtime promise. Target maintenance downtime is at most 30 minutes; measure it in rehearsal. Jobs have no retries or TTL cleanup and use `BeforeHookCreation`; last runs remain inspectable. Datadog labels are `env:staging`, `service:novu-upgrade`; JSON includes operation_id, step, attempt, status, duration and exit_code. Termination/deadline can prevent any final log, so inspect Job status too.
 
-Every operation claims a receipt with ConfigMap resourceVersion CAS. Matching completed receipts skip; partial, failed or changed-input receipts stop. A global owner rejects overlapping attempts. After a failed attempt, contain it and use the recovery decision below; changing the attempt string alone is not permission to resume partial migrations. Failure containment rechecks writers even when its earlier containment receipt completed, except when the same operation has completed smoke: owner status `complete` for upgrade or `recovered` for R1 is terminal and skips without scaling writers or changing receipts. Data restore alone records nonterminal `restored`; failure still contains writers until R1 PostSync validation succeeds.
+Every operation claims a receipt with ConfigMap resourceVersion CAS. Matching completed receipts skip; partial, failed or changed-input receipts stop. A global owner rejects overlapping attempts. After a failed attempt, contain it and use the recovery decision below; changing the attempt string alone is not permission to resume partial migrations. For an owner with `maintenanceStarted:true`, failure containment rechecks writers even when its earlier containment receipt completed, except when the same operation has completed smoke: owner status `complete` for upgrade or `recovered` for R1 is terminal and skips without scaling writers or changing receipts. Data restore alone records nonterminal `restored`; failure still contains writers until R1 PostSync validation succeeds.
 
 Backups live under `<sync-revision>/<attempt-id>/<operation-id>/`. Every upload uses `ifGenerationMatch=0`. The ConfigMap backup receipt references a manifest by object name, generation, SHA-256 and size; the manifest pins the Mongo archive, RDB and complete inventory. Step evidence uses unique immutable objects. Downloads specify the generation and recheck hashes. No logs or state contain raw documents or credentials. Retention is 30 days; lifecycle eligibility is 60 days, not a promise of immediate deletion.
 
@@ -75,7 +98,7 @@ Useful queries: `service:novu-upgrade env:staging @status:failed`, `service:novu
 
 ## Failure and recovery
 
-A migration/precheck/verification error blocks Sync before 3.19 writers start. SyncFail scales the writers to zero, writes a summary and does **not** restore data. If the hook cannot run, the read-only observer alerts the owner; the observer does not mutate the cluster. A partial receipt is intentional evidence, not something to erase. Keep the operation's Jobs terminated before merging R1; the runner also refuses concurrent active runner Pods.
+A migration/precheck/verification error blocks Sync before 3.19 writers start. SyncFail scales the writers to zero only when the matching owner has `maintenanceStarted:true`; with no owner or before maintenance, it leaves writers untouched. It writes failure evidence in either case and does **not** restore data. If the hook cannot run, the read-only observer alerts the owner; the observer does not mutate the cluster. A partial receipt is intentional evidence, not something to erase. Keep the operation's Jobs terminated before merging R1; the runner also refuses concurrent active runner Pods.
 
 A Deployment exceeding `progressDeadlineSeconds` ([Kubernetes default 600s unless set](https://kubernetes.io/docs/concepts/workloads/controllers/deployment/#progress-deadline-seconds)) reports `ProgressDeadlineExceeded`; the pinned Argo CD v2.13.2 engine maps it to [Degraded](https://github.com/argoproj/gitops-engine/blob/bd7681ae3f8b/pkg/health/health_deployment.go#L32-L38) and fails the sync so SyncFail containment runs. An isolated stuck Deployment is therefore not necessarily unbounded. Other resources still Progressing can [delay failure and SyncFail](https://github.com/argoproj/gitops-engine/blob/bd7681ae3f8b/pkg/sync/sync_context.go#L416-L489). If sync remains Running after migrate, the observer alerts the upgrade owner immediately; containment is owner-operated:
 

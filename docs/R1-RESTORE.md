@@ -46,8 +46,8 @@ Write the following as jobs.yaml. Resolve the PostSync smoke subscriber and appl
 
 The R1 operation runs in this order:
 
-1. PreSync quiesce stops writers and datastores; PreSync restore verifies and restores the selected backup, recording nonterminal `restored`.
-2. Sync starts the old datastores and writers. A later apply failure still invokes SyncFail containment and scales writers to zero.
+1. PreSync quiesce records `maintenanceStarted:true` immediately before stopping writers and datastores; PreSync restore verifies and restores the selected backup, recording nonterminal `restored`.
+2. Sync starts the old datastores and writers. A later apply failure still invokes SyncFail containment and scales writers to zero. If quiesce failed before recording maintenance start, or no operation owns state, SyncFail records failure evidence without scaling writers.
 3. PostSync smoke runs with `MODE=restore` and the same restore inputs. It requires the restore receipt, checks API/WS health and the existing subscriber's HMAC inbox session, then records terminal `recovered`. It does not require upgrade index/workflow receipts or alter TTL; the saved baseline starts Mongo with TTL enabled. A validation failure leaves the operation nonterminal for SyncFail containment.
 4. Verify old web login, topics, bridge and Mailpit; record recovery time and lost/replayed work, then complete the mandatory hook retirement below before ordinary syncs resume.
 
