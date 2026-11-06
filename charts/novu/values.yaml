@@ -1,7 +1,7 @@
 ingress:
   enabled: false
   className: ""
-  annotations: { }
+  annotations: {}
   host: chart-example.local
   tls:
     secretName: novu-tls
@@ -37,7 +37,7 @@ api:
     pullPolicy: IfNotPresent
     tag: ""
   port: 3000
-  resources: { }
+  resources: {}
   contextPath: ""
   idempotencyEnabled: false
   rateLimitingEnabled: false
@@ -51,7 +51,7 @@ worker:
     repository: ghcr.io/novuhq/novu/worker
     pullPolicy: IfNotPresent
     tag: ""
-  resources: { }
+  resources: {}
   broadcastQueueChunkSize: 100
   multicastQueueChunkSize: 100
 
@@ -63,10 +63,10 @@ ws:
     tag: ""
   port: 3002
   contextPath: ""
-  resources: { }
+  resources: {}
 
 global:
-  imagePullSecrets: [ ]
+  imagePullSecrets: []
   security:
     allowInsecureImages: true
   env:
@@ -117,3 +117,40 @@ mongodb:
     repository: bitnamilegacy/mongodb
   serviceBindings:
     enabled: true
+
+upgrade:
+  enabled: false
+  image: ""
+  bucket: proda-staging-636c0f80-novu-upgrade
+  serviceAccountName: novu-upgrade
+  operationStateName: novu-upgrade-state
+  operationId: ""
+  attemptId: ""
+  syncRevision: ""
+  mode: upgrade
+  indexDrops: []
+  infobipIntegrationIds: []
+  workVolumeSize: 40Gi
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+      ephemeral-storage: 10Gi
+    limits:
+      cpu: "2"
+      memory: 4Gi
+      ephemeral-storage: 45Gi
+  deadlines:
+    quiesce: 300
+    backup: 600
+    verify: 900
+    precheck: 300
+    migrate: 900
+    reconcile-indexes: 600
+    smoke: 180
+    failure: 300
+  smoke:
+    subscriberId: ""
+    applicationIdentifier: ""
+    apiKeySecretName: ""
+    apiKeySecretKey: api-key

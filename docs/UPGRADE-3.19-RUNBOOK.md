@@ -1,393 +1,194 @@
-# WEB-6859 / WEB-6857: Novu 2.1.0 → 3.19.0
+# WEB-6859: automated EU staging Novu upgrade
 
-Status: rollout preparation only, evidence refreshed 2026-11-04. This review performs no deployment or migration. The owner schedules each maintenance window. The EU staging Application change is [argocd-app-of-apps #8848](https://github.com/proda-ai/argocd-app-of-apps/pull/8848); it pins the head commit of this chart PR, and this PR merges with a merge commit so that pinned commit stays reachable on `main`. Re-check that the pin equals the merged head before the maintenance window.
+This flow upgrades only EU staging from 2.1.0 to 3.19.0. The binding lean addendum supersedes the old manual runbook and DESIGN's recovery-controller/outbox proposal. No upgrade is activated by merging the chart or publishing the runner. Hooks default to disabled. Other Applications, including Core UI, Excelsior and APS, continue deploying.
 
-## Release and scope
+## Inputs and activation
 
-Server [v3.19.0](https://github.com/novuhq/novu/releases/tag/v3.19.0), commit `fe53c481acb005925b990fe2484fcb6aea396e28`, is the only [3.19 server tag](https://api.github.com/repos/novuhq/novu/git/matching-refs/tags/v3.19.) found on the verification date. SDK versions such as `@novu/js@v3.19.2` are separate releases. Chart 0.2.5 → 0.3.0; all four application image tags inherit appVersion `3.19.0`.
+L1 infrastructure #3662 must have applied in both `Proda/platform-staging` and `Proda/kubernetes-staging`. Compare their `novu_upgrade` outputs: bucket `proda-staging-636c0f80-novu-upgrade`, namespace `novu`, KSA `novu-upgrade`, state ConfigMap `novu-upgrade-state`, regional cluster `staging-proda-cluster` in `europe-west2`. Terraform owns the KSA/Role/RoleBinding/ConfigMap. This chart creates none of them. Pods opt into the projected token; GCS authenticates through Workload Identity ADC.
 
-Public GHCR manifest lists were rechecked anonymously on 2026-11-02; all support linux/amd64 and linux/arm64:
+Activity Centre's independent `ops/novu-upgrade` workflow builds a runner from Novu commit `fe53c481acb005925b990fe2484fcb6aea396e28`, applying [the upstream patch](novu-3.19-migrations.patch), and publishes only on main. Copy the registry `@sha256` reference from the workflow summary; never use its mutable SHA tag in values. The package has no Activity Centre deployment dependency. Node, Mongo 8.0.8/database tools and Redis 7.4.3 are bundled; Jobs download no source or packages. Registry pull/WI and available ephemeral disk must be rehearsed before activation.
 
-| Image under `ghcr.io/novuhq/novu/` | Manifest-list digest |
-| --- | --- |
-| api | `sha256:5cd2a586888b48885cb9ad91fb3cd25a38e6f70bb99d38d48f4d475b57bf544a` |
-| worker | `sha256:2fa72651958986570f3929df0079908a6a4c65f945cf8fa69d973c707ce4ac81` |
-| ws | `sha256:00aa8b9f080da2af443269af672c00b7561556d7adb4b097b4e54c2127de61e5` |
-| dashboard | `sha256:15a7773e01658f671e56fb9f0ddc8f043008bb0cfea2d6c5d1a0a60c722bf6e1` |
+L4 changes only the Novu child Application: immutable chart/runner pins, `upgrade.enabled=true`, full reviewed `upgrade.syncRevision`, unique `operationId`/`attemptId`, bucket/KSA, `global.env.mongodb.autoCreateIndexes=false`, desired worker replicas 1, existing secret bytes and hosts preserved. `syncRevision` is supplied explicitly: Argo does not substitute an environment variable inside a rendered hook. Use the actual chart source SHA consistently across every Job. Configure automated sync with `selfHeal:false` and `retry.limit:0` during maintenance. Never selective-sync this Application; hooks do not run during selective sync. Parent automation remains enabled.
 
-Recheck digests for both architectures before rollout. The inspected amd64 registry configs use `sh -c 'node dist/main.js'` for API/worker/WS, **not** the PM2 `-i max` shown in the tagged Dockerfiles. Keep their image entrypoints; confirm one Node process per Pod on the actual architecture. The dashboard entrypoint and `http-server` CMD are also preserved.
+Supply an existing test subscriber and its environment application identifier through `upgrade.smoke.*`; unresolved `SMOKE_*` and `REPLACE_*` inputs block rendering. The smoke does not provision fixtures. L1 declares ExternalSecret `novu/novu-upgrade-smoke`, copying the existing Secret Manager value `scr-s-proda-core-api-novu` through ClusterSecretStore `gcp-secret-manager` to Secret `novu-upgrade-smoke`, key `api-key`. Set `apiKeySecretName` and `apiKeySecretKey` to those names. The core-api namespace's Secret cannot satisfy a hook in `novu`. Before activation, require this ExternalSecret's Ready condition and a successful HMAC inbox session against the still-running 2.1 API using the exact subscriber, application identifier and key; record sanitized evidence, never the key or session token. This proves both fixture existence and key/environment agreement before migration. Do not change smoke inputs during an attempt. Preserve `JWT_SECRET`, `NOVU_SECRET_KEY`, environment API keys, the exact 32-byte `STORE_ENCRYPTION_KEY`, integration IDs and provider credentials. Keep the bridge/Mailpit outbound allowlist, old messages response shape, Redis DB/config, Mongo standalone topology and PVCs. No real SendGrid delivery is part of automated smoke.
 
-The [tagged community compose](https://github.com/novuhq/novu/blob/v3.19.0/docker/community/docker-compose.yml) still pins 3.18.0; use its wiring, not those versions. CE needs API, worker, WS, dashboard, Mongo and Redis. No extra studio, Novu-hosted bridge, Clerk, ClickHouse or Postgres is required. Keep Activity Centre's external bridge and existing workflow sync Job.
+Preflight must confirm the exact L1 workload names: Deployments `novu-api`, `novu-worker`, `novu-ws`; StatefulSets `novu-mongodb-mongodb`, `novu-redis-master`; Mongo major 8, Redis major 7, single master. Preserve Mongo chart 16.5.1 and Redis chart 20.13.4. Confirm 40Gi work space fits the compressed archives plus restored Mongo/Redis copies; tune resource budgets from rehearsal. Prepare [R1](R1-RESTORE.md) before arming.
 
-Only `environments/staging/novu.yaml` changes in ArgoCD. US staging and both production pins remain `b6f40fb6ab529119dd34bd47e6acaa16815240d9`. Roll out EU staging → US staging → EU production → US production, each with a separate owner decision and observation period covering representative digests/delays. No automatic promotion.
+## First activation
 
-## Configuration and identity changes
-
-| Component | Image/port | Configuration |
-| --- | --- | --- |
-| API | `api:3.19.0`, 3000 | Public API_ROOT_URL; FRONT_BASE_URL and DASHBOARD_URL use the new dashboard origin; registration remains disabled in staging; WIDGET_BASE_URL empty; API_CONTEXT_PATH empty. |
-| Worker | `worker:3.19.0`, 3004 | Explicit PORT; API_ROOT_URL=`http://novu-api.novu.svc.cluster.local:3000`; broadcast/multicast chunks stay 100. No public Service. |
-| WS | `ws:3.19.0`, 3002 | PORT and empty WS_CONTEXT_PATH; retain Socket.IO routing. |
-| Dashboard | `dashboard:3.19.0`, 4000 | Only public VITE_API_HOSTNAME and VITE_WEBSOCKET_HOSTNAME from its own ConfigMap. No server credentials or shared server env. |
-
-All servers receive IS_SELF_HOSTED=true, NOVU_ENTERPRISE=false, LOG_LEVEL=info, NEW_RELIC_ENABLED=false and explicit Mongo min/max pools 10/200 per process by default. EU staging explicitly overrides these to 10/50; that trial ceiling is not a production recommendation. API/worker also receive IS_V2_ENABLED=true and NOVU_SAFE_OUTBOUND_ALLOW. API idempotency, rate limiting and the new messages response format default to false. Keeping `api.newMessagesApiResponseEnabled=false` preserves `totalCount` and the prior `hasMore` calculation for `/v1/messages`. The pinned EU staging values keep this flag false; enabling the new response format is a separate, consumer-reviewed change. Preserve NODE_ENV, Redis DB 2, credentials and S3 placeholders. The pinned staging Application sets MONGO_AUTO_CREATE_INDEXES=false and worker.replicaCount=0; keep these barriers through migration/index reconciliation. Auto-indexing may be enabled only after index verification in a separately reviewed values change. The fork's index behavior is application startup auto-indexing; there is no separate index Job in the baseline.
-
-`global.env.safeOutboundAllow` defaults to empty (no SSRF exceptions). Inventory all required private outbound destinations, including private SMTP as well as the bridge, and allow their exact FQDNs. argocd-app-of-apps #8848 sets `staging-audit-log-service-service.audit-log-service.svc.cluster.local,mailpit.novu.svc.cluster.local`. Keep both entries: bridge-only guidance would break staging SMTP delivery. Verify that exact list in both API and worker renders and that the configured SMTP host uses the Mailpit FQDN. The broad `.svc.cluster.local` override has been removed. Repin the chart after these fixes are committed and record the replacement companion/chart SHAs; a successful Helm render does not satisfy migration or consumer gates. Entries are comma-separated hosts, suffixes, IPs or CIDRs, not URLs/paths. Never use `*` or allow all private networks. Keep `/audit-log-service-api/novu`, signing keys and NetworkPolicy reachability for API discovery, worker execution and SMTP. See the [parser](https://github.com/novuhq/novu/blob/v3.19.0/packages/shared/src/utils/outbound-ssrf-allow-list.ts).
-
-This implementation follows the requested dashboard rename: Helm `web` → `dashboard`, `ingress.web` → `ingress.dashboard`, Deployment/Service/Ingress `novu-web` → `novu-dashboard`, and EU staging `web.novu-staging.platform-services.proda.dev` → `dashboard.novu-staging.platform-services.proda.dev`. This deliberately differs from the research's proposed retention of the `web` identities. Verify DNS and issue the new `dashboard.novu-tls` certificate before opening traffic. Prune the obsolete web resources and `novu-web-env-config` during the scheduled sync after verifying the new route. The API/WS hosts, aliases, service names, ports and TLS secrets remain unchanged.
-
-The dashboard keeps the existing IP restriction via its separate Ingress. Its CSP uses a separate `novu-dashboard-csp-headers` ConfigMap; API/WS retain their original script policy. The image injects inline `window._env_`; two hashes cover the possible orders of the two VITE variables. Both CORS ingress annotations include the new dashboard origin plus `https://staging.proda.ai` and preserve SDK headers. Never place secrets in VITE values. VITE_SELF_HOSTED=true and VITE_NOVU_ENTERPRISE=false are CE **build-time** flags, not runtime overrides.
-
-Recalculate CSP whenever either VITE value or dashboard image changes. In a disposable local container, preserving the image entrypoint:
-
-```sh
-docker run --rm --network none \
-  -e VITE_API_HOSTNAME=https://api.novu-staging.platform-services.proda.dev \
-  -e VITE_WEBSOCKET_HOSTNAME=https://ws.novu-staging.platform-services.proda.dev \
-  ghcr.io/novuhq/novu/dashboard:3.19.0 cat /app/dist/index.html > /tmp/novu-dashboard-index.html
-python3 - <<'PY'
-import base64, hashlib, re
-from pathlib import Path
-html = Path('/tmp/novu-dashboard-index.html').read_text()
-script = next(s for s in re.findall(r'<script>(.*?)</script>', html, re.S) if 'window._env_' in s)
-lines = script.splitlines(keepends=True)
-assert len(lines) == 5 and all('VITE_' in s for s in lines[2:4])
-for text in (script, ''.join(lines[:2] + lines[2:4][::-1] + lines[4:])):
-    print('sha256-' + base64.b64encode(hashlib.sha256(text.encode()).digest()).decode())
-PY
-```
-
-Expected current hashes: `sha256-79dQgVDi0j05hGoVIjK91yw9jZqg/aIAOBwiHrabRJc=` and `sha256-R5PgAGw+2awOeOkUj4FKLY73UnDDGS/YjVqSabe0YsU=`. Verify the served HTML, browser console, login and SPA navigation in rehearsal; a matching hash alone is not an end-to-end test.
-
-Trial staging budgets, not measured requirements: API requests 500m/512Mi, limits 1000m/1Gi; worker 250m/512Mi → 1000m/1Gi; WS 100m/256Mi → 500m/512Mi; dashboard 100m/128Mi → 500m/512Mi. Mongo remains 500m/2Gi → 2000m/4Gi. Gate promotion on RSS, OOM/restarts, p95 latency and queue lag. Explicitly review Mongo pool sizing before each production promotion: the old maximum was 200, the chart retains 200, and staging overrides it to 50. The newly applied minimum is 10 per process. Record approved min/max values, Pod/process counts, aggregate connections, Mongo connection capacity, pool checkout wait/timeouts and load-test latency; do not copy staging's 10/50 into production without this review. [Novu capacity guidance](https://docs.novu.co/community/self-hosting-novu/overview) is larger than these trial application budgets.
-
-## Preflight and maintenance barrier
-
-1. Owner: the PRODA Web App Squad (Activity Centre owners) drives the upgrade and reviews future Renovate Novu PRs; the platform team owns cluster access, Mongo backup/restore and the maintenance window. Assign owner, window, maximum downtime, rollback deadline and evidence location. Record the deployed chart/config snapshot, actual image digests/architectures, live database versions, PVs, credentials' version identifiers and queue metrics. Do not log credentials.
-2. Inventory organizations, environments, users, API keys, subscribers, topics/subscriptions, workflows, message templates, layouts, integrations and all preference types. Save counts and index definitions. Inventory v0 UI-created workflows separately; they may not be visible in the new dashboard. Do not recreate code-first workflows or change identifiers.
-3. Preserve JWT_SECRET, NOVU_SECRET_KEY, environment API keys, integration IDs/credentials and the **exact 32-character** STORE_ENCRYPTION_KEY. Existing SendGrid credentials must remain decryptable. Preserve existing Secret ownership and Argo ignoreDifferences/RespectIgnoreDifferences. Staging's chart-managed values must not be replaced with newly generated secrets; other regions use ExternalSecret refs and are outside this change.
-4. Confirm the actual application database from `novu-mongodb-svcbind-root:uri` without printing the URI. The Bitnami root service binding can select `/admin`; do not assume `/novu` or trust the old unused ConfigMap URL. Preserve the database path for migrations. Confirm collections and `db.getName()` through the injected URI.
-5. Keep Mongo chart 16.5.1 and Redis chart 20.13.4/Chart.lock unchanged. Their resolved images are currently `bitnamilegacy/mongodb:8.0.8-debian-12-r0` and `bitnamilegacy/redis:7.4.3-debian-12-r0`; confirm live versions. No database-engine upgrade is included. Mongo is configured standalone; Redis has a single master and no replicas.
-6. Preserve staging claims `novu-mongodb-data-hyperdisk-balanced` and `novu-redis-data-hyperdisk-balanced`. Other regions' requested Mongo 20Gi/Redis 10Gi are not changed. Live capacity, snapshots and restore duration require rehearsal.
-7. Suspend relevant parent and child Argo reconciliation and workflow sync/provision Jobs. The staging draft removes child automated sync, but parent reconciliation must also be controlled. Pause producers and external traffic, drain active queues and record delayed/repeat/retry jobs. Stop API, worker and WS writers before the coordinated backup. Keep them stopped through migrations. Never let mixed server versions consume one Redis queue.
-
-## Backup and isolated restore rehearsal
-
-Take an encrypted full logical Mongo backup plus consistent Mongo/Redis disk snapshots (and Redis AOF/RDB as appropriate) while all writers are stopped. Save Secret/config exports encrypted outside these PVCs. Label snapshots with the same maintenance barrier and record Redis queue counts. Do not flush Redis.
-
-Run backup commands in an owner-created tools Job with Mongo Database Tools compatible with the live server, credentials injected from the existing Secret and a separate backup volume mounted at `/backup`. Derive `MONGO_BACKUP_URI` from the service-binding root URI by removing its database path and setting `authSource=admin` so the dump includes **all** databases. Keep `MONGO_URL` unchanged for migrations. Do not echo either URI. Do not use `--oplog` on standalone.
-
-```sh
-mongodump --uri="$MONGO_BACKUP_URI" --archive=/backup/pre-3.19.archive.gz --gzip
-sha256sum /backup/pre-3.19.archive.gz > /backup/pre-3.19.archive.gz.sha256
-sha256sum -c /backup/pre-3.19.archive.gz.sha256
-```
-
-Restore to a **fresh**, isolated same-version Mongo using a distinct `MONGO_RESTORE_URI`, with an isolated Redis and provider/bridge egress denied except approved test endpoints. Never attach rehearsal workloads to live Redis, email providers or the production bridge. Resolve any application bootstrap dependencies against rehearsal services.
-
-```sh
-mongorestore --uri="$MONGO_RESTORE_URI" --archive=/backup/pre-3.19.archive.gz --gzip --drop
-```
-
-A restore over an existing database does not remove newly created collections absent from the archive. Use a fresh instance or explicitly reconcile such collections. Verify users/auth, every database/collection count, indexes, representative preferences and encrypted integration credentials before migrations. Record restore time and compare a complete backup/restore manifest; exit code alone is insufficient. Protect rehearsal data as production data.
-
-### Conditional legacy preference centralization
-
-Audit legacy `subscriberpreferences` and workflow preference fields against `preferences`, including values, not just counts. If already centralized, **skip** the historical migration: its upserts can overwrite newer preferences with stale legacy values. If required, use the **v2.1.0** source runner before any 3.19 migrations:
-
-```sh
-pnpm exec ts-node --transpileOnly ./migrations/preference-centralization/preference-centralization-migration.ts
-```
-
-The [3.19 version](https://github.com/novuhq/novu/blob/v3.19.0/apps/api/migrations/preference-centralization/preference-centralization-migration.ts) intentionally exits and directs operators to 2.1.0. The 2.1.0 script calls `withTransaction`, which cannot run on the configured standalone Mongo. If needed, this is a **rollout blocker** until the owner rehearses restoring the quiesced backup into an isolated temporary replica set, running the 2.1 migration there, verifying all preference values/counts, taking a fresh migrated dump and restoring it into a fresh same-version standalone instance. Preserve database name, auth and credentials throughout. Do not improvise a live topology conversion or run the transaction script on standalone. This conditional restore path has not been executed in this task.
-
-## Migration runner and execution
-
-[Official migration process](https://docs.novu.co/community/self-hosting-novu/data-migrations). The stock runtime images are not supported source migration runners. Build a dedicated, immutable image from the exact tag, including source, development dependencies, built workspace libraries and the API's TS config. For 3.19 use Node 22 compatible with the tagged Dockerfile and pnpm 11.0.9; for the conditional legacy runner use Node 20 and pnpm 9.11.0 from v2.1.0. Use `pnpm install --frozen-lockfile`, `pnpm build:api` at repository root and retain the complete workspace. Build CE without enterprise registry credentials. Resolve any build issues in rehearsal; never change the lockfile or pull floating migration source during the maintenance window.
-
-Apply the bundled [migration runner patch](novu-3.19-migrations.patch) to the exact v3.19.0 source **before** building the runner. Copy it to `/tmp/novu-3.19-migrations.patch` and run from the source repository root:
-
-```sh
-patch --dry-run --fuzz=0 -p1 < /tmp/novu-3.19-migrations.patch
-patch --fuzz=0 -p1 < /tmp/novu-3.19-migrations.patch
-```
-
-Require a clean application with no offsets; record the patch checksum with the runner digest. Never execute the five affected stock scripts. The patched preference migration excludes soft-deleted rows; run the tombstone reconciliation below first. For live duplicates it keeps the latest `updatedAt`, breaking ties by greatest `_id`, and rejects missing/invalid timestamps. Subscriber grouping includes both `contextKeysHash` (missing means `DEFAULT_CONTEXT`) and sorted `contextKeys` (missing means empty), so distinct contexts are not collapsed. Review/export each proposed survivor and its channel opt-outs before execution; reconcile exceptions explicitly rather than silently accepting a timestamp policy. Inconsistent context hashes/keys must be reconciled against the target schema before index creation. `$sortArray` requires MongoDB 5.2+; the scoped deployment uses 8.0.8, and other deployments must verify this prerequisite.
-
-Preference-type failures are collected and then thrown after all types settle. Topic backfill/dedup batch failures, short deletes, invalid source links and remaining missing/duplicate identifiers fail the Job. Layout template update failures and remaining templates matching its migration filter also fail the Job. All five patched entrypoints await Mongo disconnect and explicitly exit 0/1. Rehearse success and injected write/cleanup failures for each, both full/final topic backfill and dedup batch paths, topic cursor/postcondition failures, layout update/postcondition failures, duplicate preferences with different contexts, tied/invalid timestamps and preserved opt-outs. Success must terminate; every injected failure must exit nonzero. The Job deadline below bounds bootstrap/cleanup hangs and must be sized from rehearsal; a deadline failure blocks progression.
-
-Runner build and database execution are **not verified** by Helm validation. Rehearse all applicable commands, module resolution, Nest bootstrap, flags and exit behavior on the restored copy; record the runner digest before approving rollout. `MIGRATION=true` is not proof that bootstrap cannot make external calls; enforce rehearsal isolation.
-
-Use one manually created Job per command, no Helm/Argo migration hooks, no automatic retry. Adapt this template to the rehearsal namespace and isolated Secret/ConfigMap names first; production names below are for the eventual scheduled window. Replace the image digest, Job name and command before applying. The ConfigMap must contain the reviewed 3.19 server settings even if live workloads are still on 2.1; create a separate migration ConfigMap from the reviewed render when necessary.
+First activation uses `upgrade.indexDrops` pre-filled from the Novu 2.1 schema:
 
 ```yaml
-apiVersion: batch/v1
-kind: Job
-metadata:
-  name: novu-migrate-REPLACE_STEP
-  namespace: novu
-spec:
-  backoffLimit: 0
-  activeDeadlineSeconds: 1800
-  template:
-    spec:
-      restartPolicy: Never
-      containers:
-        - name: migrate
-          image: REPLACE_RUNNER_IMAGE_AT_SHA256
-          workingDir: /usr/src/app/apps/api
-          command: ["/bin/sh", "-ec"]
-          args:
-            - REPLACE_WITH_ONE_COMMAND_BELOW
-          envFrom:
-            - configMapRef:
-                name: novu-migration-config
-            - secretRef:
-                name: novu-secret
-          env:
-            - name: MONGO_URL
-              valueFrom:
-                secretKeyRef:
-                  name: novu-mongodb-svcbind-root
-                  key: uri
-            - name: REDIS_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: novu-redis
-                  key: redis-password
-            - name: NODE_ENV
-              value: production
-            - name: MIGRATION
-              value: "true"
-            - name: MONGO_AUTO_CREATE_INDEXES
-              value: "false"
-            - name: NEW_RELIC_ENABLED
-              value: "false"
-          resources:
-            requests:
-              cpu: "1"
-              memory: 2Gi
-            limits:
-              cpu: "2"
-              memory: 4Gi
+upgrade:
+  indexDrops:
+    - collection: subscribers
+      name: subscriberId_1__environmentId_1
+      definitionSha256: e1f3b69204c2bd48663e2597e7a0917aa8f836afede8fe44dd8a69733594627a
+    - collection: preferences
+      name: _environmentId_1__templateId_1_type_1
+      definitionSha256: f0b9477871d216902f35e20e311e7d508d98f6575e649d9923066820e475befb
 ```
 
-Set PORT=3000, IS_SELF_HOSTED=true, NOVU_ENTERPRISE=false, IS_V2_ENABLED=true, both pool sizes and the API-specific flags/URLs in `novu-migration-config` alongside the server ConfigMap settings. Use the actual Secret values, including the encryption key. Never deploy empty placeholders over existing secrets. Size Job resources and timeout from rehearsal. Inspect retained logs and postconditions after each Job before creating the next.
-
-### Complete new Mongo migration inventory and order
-
-Compared complete v2.1.0/v3.19.0 source trees under [`apps/api/migrations`](https://github.com/novuhq/novu/tree/v3.19.0/apps/api/migrations). These are the eight new executable Mongo scripts; `.spec.ts` files are tests. The legacy message cleanup and preference tombstone reconciliation below are additional data steps, not upstream scripts. Complete them before the numbered migrations. All `pnpm` commands below run from `apps/api` in the runner.
-
-| Order | Path under migrations/ | Applicability and rerun behavior |
-| --- | --- | --- |
-| 1 | `preferences-uniqueness/preferences-uniqueness-migration.ts` | Required for conflicting duplicates among SUBSCRIBER_GLOBAL, SUBSCRIBER_WORKFLOW, USER_WORKFLOW and WORKFLOW_RESOURCE. Use the patched runner only: keeps latest `updatedAt` (greatest `_id` on ties), preserves distinct subscriber contexts and propagates failures. Destructive: reconcile tombstones, review/export exact live survivors and reconcile context metadata first. Idempotent on unchanged data. |
-| 2 | `001-add-default-identifier-to-topic-subscribers/add-default-identifier-to-topic-subscribers-migration.ts` | Required for existing topic links without identifier. Use the patched runner only. Missing-field filter is idempotent. Missing topicKey/externalSubscriberId, failed batches or remaining missing identifiers fail the Job; repair before proceeding. |
-| 3 | `002-remove-duplicate-identifiers/remove-duplicate-identifiers.ts` | Required when environment+identifier duplicates exist, after 001. Use the patched runner only: destructively keeps lowest `_id`; review survivors. Batch/cursor failures, short deletes and remaining duplicate groups fail the Job. Idempotent on unchanged data. |
-| 4 | `email-step-ui-schema-html-editor/email-step-ui-schema-html-editor-migration.ts` | Use the patched runner with explicit disconnect/exit. Required for email templates with controls.uiSchema; otherwise no-op. Repeated $set has the same content but can change timestamps. |
-| 5 | `add-layout-id-to-email-controls/add-layout-id-to-email-controls-migration.ts` | Use the patched runner only. Required for nondeleted email templates with schema/uiSchema and both layoutId properties missing. Template write failures or remaining matching templates fail the Job. Idempotent filter; inspect partially populated templates separately. |
-| 6 | `agent-subscriber-access-default/agent-subscriber-access-default.migration.ts` | Conditional on existing agents missing behavior.subscriberAccess. Managed runtime+managedRuntime → open, others → restricted; expected no-op for this deployment. Idempotent missing-field filter. Needs explicit DAL connection. |
-| 7 | `infobip-sms-base-url/deactivate-misconfigured-infobip-sms-integrations.migration.ts` | Conditional on active Infobip SMS integrations with unsafe/missing baseUrl. Deactivates them; unrelated to SendGrid. Idempotent active-only filter. Export only, needs explicit DAL connection and original encryption key. |
-| Deferred | `deleteLogs/dropLogsCollection.ts` | Optional destructive cleanup of obsolete logs; defer until after rollback window. Rerun catches NamespaceNotFound rather than clean success. |
-
-### Required legacy live-message cleanup
-
-The [3.19 message schema](https://github.com/novuhq/novu/blob/v3.19.0/libs/dal/src/repositories/message/message.schema.ts) filters live messages with `deleted: {$exists: false}`. Legacy messages with the boolean `deleted:false` would disappear from those queries. After the coordinated backup, with every writer stopped, inventory `messages.deleted` in the actual application database. Export the affected IDs and representative inbox/message responses to the protected evidence location. Rehearse this cleanup on the restored copy first. Keep `deleted:true` tombstones unchanged; never unset the field on all messages.
-
-Run this command in a manually created Mongo tools Job with `mongosh`, the same injected application `MONGO_URL`, `backoffLimit: 0` and a rehearsed deadline. It uses the raw collection, avoiding the 3.19 model's visibility filter. Unknown field values block execution for separate reconciliation. Record the before/after counts; any failed write or postcondition must exit nonzero and block the next migration.
+Quiesce audits live indexes before recording `maintenanceStarted` and stopping writers. If live definitions differ or another unapproved conflict exists, the Job fails with writers still up. Its failure log and evidence contain every conflicting index's collection, live name, exact normalized definition JSON and hash, plus a paste-able `indexDrops` array. Read it with:
 
 ```sh
-mongosh "$MONGO_URL" --quiet --eval '
-const messages = db.getCollection("messages");
-const live = {$expr: {$eq: ["$deleted", false]}};
-const tombstones = {$expr: {$eq: ["$deleted", true]}};
-const absent = {deleted: {$exists: false}};
-const before = {
-  total: messages.countDocuments({}),
-  live: messages.countDocuments(live),
-  tombstones: messages.countDocuments(tombstones),
-  absent: messages.countDocuments(absent)
-};
-printjson({database: db.getName(), before});
-if (before.total !== before.live + before.tombstones + before.absent) {
-  throw new Error("Unexpected messages.deleted values; reconcile before cleanup");
-}
-const result = messages.updateMany(live, {$unset: {deleted: ""}});
-const after = {
-  total: messages.countDocuments({}),
-  live: messages.countDocuments(live),
-  tombstones: messages.countDocuments(tombstones),
-  absent: messages.countDocuments(absent)
-};
-printjson({matched: result.matchedCount, modified: result.modifiedCount, after});
-if (!result.acknowledged || result.matchedCount !== before.live || result.modifiedCount !== before.live ||
-    after.live !== 0 || after.total !== before.total || after.tombstones !== before.tombstones ||
-    after.absent !== before.absent + before.live) {
-  throw new Error("Legacy message cleanup postcondition failed");
-}
+kubectl -n novu logs job/novu-upgrade-quiesce --all-containers=true
+```
+
+Copy the printed `indexDrops` entries into `spec.source.helm.valuesObject.upgrade.indexDrops` in `argocd-app-of-apps/environments/staging/novu.yaml`, review the definitions and approvals, set a fresh `attemptId`, and re-sync after the parent reconciles the corrected values. Archive the failed Job's logs first. Argo CD 2.13.2 also runs SyncFail for a failed PreSync Job; before maintenance, that hook records failure without scaling writers and permits a corrected attempt to claim ownership. The later precheck repeats the index audit after backup verification.
+
+## Execution and receipts
+
+| Hook | Wave | Deadline | Result |
+| --- | ---: | ---: | --- |
+| PreSync quiesce | -60 | 300s | Audit index approvals with writers up; record maintenance start, then scale API/worker/WS to zero and wait for Pod deletion. |
+| PreSync backup | -50 | 600s | Pause Mongo TTL; dump all databases, snapshot Redis RDB and upload checksummed manifest. |
+| PreSync verify | -40 | 900s | Download exact generations; restore on disposable loopback mongod; compare counts/options/indexes; check/load RDB. |
+| PreSync precheck | -30 | 300s | Prove centralization unnecessary; reject collisions and invalid legacy/context/layout data. |
+| PreSync migrate | -20 | 900s | Apply ordered pinned contracts and verify counts and complete value fingerprints. |
+| PreSync reconcile-indexes | -10 | 600s | Apply only approved named drops; create/verify target DAL indexes. |
+| PostSync smoke | 10 | 180s | API/WS health, seven active external workflows and valid HMAC inbox session; restore original TTL setting. |
+| SyncFail failure | 0 | 300s | Record failure; stop writers only if the owner started maintenance; retain data for R1. |
+
+Deadlines are upper bounds, not a measured downtime promise. Target maintenance downtime is at most 30 minutes; measure it in rehearsal. Jobs have no retries or TTL cleanup and use `BeforeHookCreation`; last runs remain inspectable. Datadog labels are `env:staging`, `service:novu-upgrade`; JSON includes operation_id, step, attempt, status, duration and exit_code. Termination/deadline can prevent any final log, so inspect Job status too.
+
+Every operation claims a receipt with ConfigMap resourceVersion CAS. Matching completed receipts skip; partial, failed or changed-input receipts stop. A global owner rejects overlapping attempts. After a failed attempt, contain it and use the recovery decision below; changing the attempt string alone is not permission to resume partial migrations. For an owner with `maintenanceStarted:true`, failure containment rechecks writers even when its earlier containment receipt completed, except when the same operation has completed smoke: owner status `complete` for upgrade or `recovered` for R1 is terminal and skips without scaling writers or changing receipts. Data restore alone records nonterminal `restored`; failure still contains writers until R1 PostSync validation succeeds.
+
+Backups live under `<sync-revision>/<attempt-id>/<operation-id>/`. Every upload uses `ifGenerationMatch=0`. The ConfigMap backup receipt references a manifest by object name, generation, SHA-256 and size; the manifest pins the Mongo archive, RDB and complete inventory. Step evidence uses unique immutable objects. Downloads specify the generation and recheck hashes. No logs or state contain raw documents or credentials. Retention is 30 days; lifecycle eligibility is 60 days, not a promise of immediate deletion.
+
+The runner uses narrow raw Mongo operations and bundled upstream helpers, avoiding Nest bootstrap and its provider/queue side effects. Order: exact boolean `deleted:false` message-field removal; preference uniqueness audit; missing-only topic identifiers; topic uniqueness audit; email editor fields; layout fields; agent access defaults; conditional unsafe Infobip deactivation. Unsafe active Infobip integrations require their exact IDs in `upgrade.infobipIntegrationIds` before deactivation; the default empty list blocks such changes. No implicit preference/tombstone deletion is approved. All collisions, including raw workflow tombstones and subscription/context unique indexes, block before migration. Legacy `subscriberpreferences` must be empty; legacy workflow values must already be represented centrally. If centralization is needed, stop: the 2.1 temporary replica-set path is not automated here.
+
+Index definitions come from the pinned DAL. `upgrade.indexDrops` must list each reviewed obsolete index's collection, name and SHA-256 of the normalized live definition (keys preserve ordering; server `v`, `ns`, `background` fields are excluded). No blanket `dropIndexes`/`syncIndexes`. Unapproved conflicts fail. App auto-indexing remains false after migration.
+
+Mongo TTL is paused during backup/verification/migration, so collection comparisons have no expiry allowance that could hide lost rows. Redis expiration timestamps remain absolute in the RDB; expired keys disappear when it is loaded. All database backups are quiesced standalone `mongodump --archive --gzip`; there is no `--oplog`. Verification runs separate local processes in the runner Pod, never a scratch database on the live Mongo instance.
+
+## Acceptance and disarming
+
+Prepare the follow-up Git change before activation. Once smoke, the full consumer acceptance checks and the observation window succeed, archive the operation evidence before any further Novu sync: the eight Job manifests/statuses, Pod statuses/termination details, events, per-Pod timestamped logs, the `novu-upgrade-state` ConfigMap and the immutable GCS receipt references. Store that snapshot with the operation's acceptance record. `BeforeHookCreation` replaces the previous Job on another sync; completed receipts do not preserve its Kubernetes status or logs. Failed/terminated Jobs need the same snapshot before retry or R1.
+
+Then merge a follow-up change to `argocd-app-of-apps/environments/staging/novu.yaml` setting only `spec.source.helm.valuesObject.upgrade.enabled: false`. Keep the accepted 3.19 chart pin, runner/operation inputs, worker replicas and `autoCreateIndexes:false` unchanged. Let the parent reconcile this child values change and confirm its rendered desired manifests contain no `novu-upgrade-*` resources before ordinary Novu changes resume. No new operation/attempt is needed for disarming. Retain the ConfigMap, GCS backups and archived evidence through the rollback window; do not clear receipts.
+
+The runner's terminal-smoke guard prevents a later SyncFail from containing the accepted upgrade while disarming is pending. It does not prevent hook Job replacement, so acceptance is not operationally closed until the evidence is archived and the hooks are disarmed. R1 remains a separate restore operation and is still permitted after successful smoke.
+
+## Read-only observation
+
+The observer needs VPN, current owner-renewed gcloud login, GKE read access and the Datadog EU logs PAT. No Secret reads, Pod exec, patch/delete, Argo operation or bucket-payload access is required.
+
+```sh
+gcloud container clusters list --project proda-staging-636c0f80
+gcloud container clusters describe staging-proda-cluster --region europe-west2 --project proda-staging-636c0f80 --format='value(name,location,status)'
+kubectl config current-context
+kubectl -n novu get jobs,pods,events
+kubectl -n novu get deployments novu-api novu-worker novu-ws
+kubectl -n novu get configmap novu-upgrade-state -o json
+kubectl -n novu logs job/novu-upgrade-verify --all-containers=true --timestamps
+kubectl -n novu describe job novu-upgrade-migrate
+```
+
+For Datadog, set the non-secret operation ID and an existing read-only PAT in the shell environment. Keep shell tracing disabled. Search ascending and follow `meta.page.after` with `page.cursor` until exhausted:
+
+```sh
+curl --fail-with-body --silent --show-error \
+  https://api.datadoghq.eu/api/v2/logs/events/search \
+  -H "Authorization: Bearer ${DD_PAT}" -H 'Content-Type: application/json' \
+  --data "{\"filter\":{\"from\":\"now-2h\",\"to\":\"now\",\"query\":\"service:novu-upgrade env:staging @operation_id:${OPERATION_ID}\"},\"sort\":\"timestamp\",\"page\":{\"limit\":100}}"
+```
+
+Useful queries: `service:novu-upgrade env:staging @status:failed`, `service:novu-upgrade env:staging @status:contained`, and `service:novu-upgrade env:staging @step:restore`. L1 monitors failed `novu-upgrade-*` Jobs, Novu CrashLoop/OOM/restarts/replica availability and ingress 5xx. Missing logs/metrics are never proof of success. Rehearse actual ingestion, metric tags and notification delivery.
+
+## Failure and recovery
+
+A migration/precheck/verification error blocks Sync before 3.19 writers start. SyncFail scales the writers to zero only when the matching owner has `maintenanceStarted:true`; with no owner or before maintenance, it leaves writers untouched. It writes failure evidence in either case and does **not** restore data. If the hook cannot run, the read-only observer alerts the owner; the observer does not mutate the cluster. A partial receipt is intentional evidence, not something to erase. Keep the operation's Jobs terminated before merging R1; the runner also refuses concurrent active runner Pods.
+
+A Deployment exceeding `progressDeadlineSeconds` ([Kubernetes default 600s unless set](https://kubernetes.io/docs/concepts/workloads/controllers/deployment/#progress-deadline-seconds)) reports `ProgressDeadlineExceeded`; the pinned Argo CD v2.13.2 engine maps it to [Degraded](https://github.com/argoproj/gitops-engine/blob/bd7681ae3f8b/pkg/health/health_deployment.go#L32-L38) and fails the sync so SyncFail containment runs. An isolated stuck Deployment is therefore not necessarily unbounded. Other resources still Progressing can [delay failure and SyncFail](https://github.com/argoproj/gitops-engine/blob/bd7681ae3f8b/pkg/sync/sync_context.go#L416-L489). If sync remains Running after migrate, the observer alerts the upgrade owner immediately; containment is owner-operated:
+
+1. In the verified EU staging context, run `argocd app get "$NOVU_APP" -o json | jq '{operation: (.status.operationState | {phase, startedAt, message}), resources: .status.resources}'` and `kubectl -n novu get deployments,pods,jobs,events`. Identify the completed migrate receipt, still-Progressing resources, Deployment conditions/deadlines and missing PostSync/SyncFail execution. `NOVU_APP` is the verified EU staging Novu Application name.
+2. Disable child auto-sync in the Git-owned Application (remove `spec.syncPolicy.automated`, keep `retry.limit:0`); ensure the parent has reconciled this before proceeding so it cannot undo a live-only toggle. Archive current Job/Pod status, timestamped logs and receipts, then run `argocd app terminate-op "$NOVU_APP"`. Confirm the operation has stopped and all runner Pods have terminated; prevent concurrent manual syncs/retries during containment.
+3. Read `kubectl -n novu get configmap novu-upgrade-state -o json`. Match `data.active.inputHash` (decode the JSON stored in `data.active`) to the affected attempt's migrate receipt (restore receipt for interrupted R1) and verify its operation, attempt and revision against the stopped sync. Check the owner and receipts again immediately before scaling; stop and escalate on missing, malformed, changed or mismatched ownership. A `complete` or `recovered` owner requires its matching completed smoke receipt and evidence: do not scale that terminal operation down because obsolete hooks failed. For the verified nonterminal owner (`running`, `restored` or `contained`), run `kubectl -n novu scale deployment novu-api novu-worker novu-ws --replicas=0`; verify each Deployment's desired replicas is zero and no Pods matching its `spec.selector.matchLabels` remain. Keep sync disabled so reconciliation cannot restart writers.
+4. Run standalone failure containment below with the **stopped operation's original inputs**, then require a successful Job, the same owner's `contained` status and a completed failure receipt with immutable evidence before R1. Argo CD v2.13.2's pinned [`Terminate()`](https://github.com/argoproj/gitops-engine/blob/bd7681ae3f8b/pkg/sync/sync_context.go#L1067-L1097) deletes running hooks and sets the operation phase directly; it does not run SyncFail hooks. Manual scaling alone leaves the runner owner `running`, which blocks R1's new quiesce claim. Do not edit/clear receipts or mark the owner `contained` manually.
+5. Record UTC times, operation/attempt/revision/inputHash, ConfigMap resourceVersion and receipts, Argo operation/resource health, Deployment conditions, Job/Pod statuses/events/logs, replica counts and containment result with the immutable evidence references. Escalate immediately to the **EU staging platform on-call and the Novu upgrade owner for WEB-6859**, including any ownership ambiguity, containment failure or failure to stop writers. Keep writers stopped and sync disabled until they approve the reviewed recovery path below.
+
+### Standalone failure containment
+
+Use an operator with Job creation, Deployment scaling and Job/state/Pod/log read access in `novu`; the Job uses the existing L1 `novu-upgrade` service account and Workload Identity. Require Helm, Mike Farah `yq` v4, `jq` and `kubectl`. Run the blocks in the same Bash shell with tracing off. Set `ORIGINAL_CHART_DIR` to an absolute checkout of the stopped operation's exact chart source SHA with its locked chart dependencies available, and `ORIGINAL_VALUES` to an absolute, access-restricted YAML file containing that operation's complete effective Helm values. Use the archived activation inputs, not current main or R1 values. Preserve the runner digest, operation/attempt, sync revision, mode, bucket/state name, approved index drops/Infobip IDs, Secret references and their original bytes; changed inputs cannot claim the original owner. Do not change the attempt ID to run containment.
+
+After steps 1–3 above, render only the hook template into a private scratch directory outside the checkout. This does not apply workloads:
+
+```sh
+set -eu
+set -o pipefail
+: "${ORIGINAL_CHART_DIR:?Set the original chart checkout path}"
+: "${ORIGINAL_VALUES:?Set the original effective Helm values file}"
+umask 077
+CONTAINMENT_DIR=$(mktemp -d "${TMPDIR:-/tmp}/novu-containment.XXXXXX")
+helm template novu "$ORIGINAL_CHART_DIR/charts/novu" --namespace novu \
+  --values "$ORIGINAL_VALUES" --show-only templates/upgrade-jobs.yaml \
+  > "$CONTAINMENT_DIR/hooks.yaml"
+```
+
+For containment of a terminated R1 operation instead, replace the entire block above with the following, setting `ORIGINAL_R1_JOBS` to its archived, fully resolved standalone `jobs.yaml`. Preserve its original `MODE=restore` and selected backup object/generation/checksum as well as the other inputs. Do not render the 3.19 chart in restore mode. The subsequent selection accepts exactly one failure Job from either source.
+
+```sh
+set -eu
+set -o pipefail
+: "${ORIGINAL_R1_JOBS:?Set the original resolved R1 jobs.yaml path}"
+umask 077
+CONTAINMENT_DIR=$(mktemp -d "${TMPDIR:-/tmp}/novu-containment.XXXXXX")
+cp "$ORIGINAL_R1_JOBS" "$CONTAINMENT_DIR/hooks.yaml"
+```
+
+Create a fresh standalone Job name so retained hook Jobs and evidence are not overwritten. Replace only Job metadata, removing Argo hook/tracking metadata while retaining the complete Pod spec, runner labels, identity, Secret references and failure arguments. After this block, review the generated JSON against the stopped operation before creating the Job; do not proceed on any mismatch.
+
+```sh
+yq -o=json '.' "$CONTAINMENT_DIR/hooks.yaml" | jq -se '
+  [.[] | select(.kind == "Job" and .spec.template.spec.containers[0].args == ["failure"])]
+  | if length == 1 then .[0] else error("Expected exactly one failure Job") end
+  | .metadata = {
+      generateName: "novu-upgrade-manual-failure-",
+      namespace: "novu",
+      labels: {"tags.datadoghq.com/env": "staging", "tags.datadoghq.com/service": "novu-upgrade"}
+    }
+' > "$CONTAINMENT_DIR/failure.json"
+```
+
+Recheck the nonterminal owner against step 3 immediately before creation. `EXPECTED_INPUT_HASH` must be the exact hash already verified there. The runner independently requires its computed input hash to match the active owner, stops/verifies writers, rejects other active runners, uploads evidence and records `contained`; it restores no data. Keep concurrent syncs and runners excluded throughout.
+
+```sh
+: "${EXPECTED_INPUT_HASH:?Set the verified stopped operation inputHash}"
+kubectl -n novu get configmap novu-upgrade-state -o json | jq -e --arg hash "$EXPECTED_INPUT_HASH" '
+  .data.active | fromjson
+  | .inputHash == $hash and (.status == "running" or .status == "restored" or .status == "contained")
 '
+CONTAINMENT_JOB=$(kubectl -n novu create -f "$CONTAINMENT_DIR/failure.json" -o name)
+kubectl -n novu wait --for=condition=complete --timeout=660s "$CONTAINMENT_JOB"
+kubectl -n novu logs "$CONTAINMENT_JOB" --all-containers=true --timestamps
+kubectl -n novu get configmap novu-upgrade-state -o json > "$CONTAINMENT_DIR/state-after.json"
+jq -e --arg hash "$EXPECTED_INPUT_HASH" '
+  (.data.active | fromjson | .inputHash == $hash and .status == "contained") and
+  ([.data | to_entries[] | select(.key | startswith("r-")) | .value | fromjson
+    | select(.inputHash == $hash and .step == "failure" and .status == "complete"
+      and .result.contained == true and .evidence.name and .evidence.generation and .evidence.sha256)] | length == 1)
+' "$CONTAINMENT_DIR/state-after.json"
 ```
 
-The operation is idempotent with writers stopped: a completed rerun matches zero documents. A partial failure requires inspection before rerunning. Require zero remaining `deleted:false` messages, unchanged total/tombstone counts, and representative previously live messages visible through the 3.19 inbox and messages APIs. The pre-upgrade backup is the rollback source; never try to reverse this by setting `deleted:false` on all messages that lack the field.
+If creation, waiting or either state check fails, stop and escalate; do not launch R1 or clear ownership. Archive the standalone Job/Pod status, logs and the failure receipt's immutable evidence reference with the original operation, and confirm its Pod has terminated before recovery. A successful failure receipt and matching `contained` owner allow a fresh R1 quiesce claim; the selected backup must still have completed verification. Keep sync disabled and writers stopped until the reviewed recovery starts.
 
-### Reconcile preference tombstones before deduplication
+Traffic and queue consumption resume during Sync, before PostSync smoke. Activity Centre triggers during downtime fail and are logged; there is no outbox. A later R1 restore loses writes since the backup and can replay queued notifications already delivered during the 3.19 window. This is the accepted staging trade-off. Do not describe recovery as lossless or auto-restore in a loop.
 
-The [3.19 preference schema](https://github.com/novuhq/novu/blob/v3.19.0/libs/dal/src/repositories/preferences/preferences.schema.ts) uniquely indexes `{_environmentId, _templateId, type}` for `USER_WORKFLOW` and `WORKFLOW_RESOURCE` without a `deleted` filter. The patched migration uses Mongoose's soft-delete filtering, so it cannot remove `deleted:true` rows that still occupy those keys. Do not choose a tombstone as a live survivor or unset its `deleted` field.
+Choose recovery from the receipts, not just the failed Job name:
 
-With writers stopped and the backup verified, use raw `mongosh` collection queries (not the Mongoose repository) to inspect duplicate keys, including tombstones:
+- If quiesce, backup, verification or precheck failed before a migration/index/smoke/restore receipt exists, require successful SyncFail containment, owner status `contained` with `retryable:true`, no malformed receipts and termination of every previous runner Job. Correct the prerequisite and use a fresh attempt ID, preserving the old receipts. The next attempt must quiesce, take a new backup and verify it before precheck/migration. The runner carries forward the recorded original TTL setting across retryable attempts. Writers remain stopped until that attempt reaches Sync; changing the attempt alone does not reopen them.
+- Without a completed verification receipt, the attempted backup is not eligible for R1. Do not manufacture verification evidence, clear state or merge the destructive restore Jobs. Precheck requires completed verification, so a clean contained pre-mutation failure can follow the fresh-attempt path above. If containment or ownership is ambiguous, keep the system closed and escalate for investigation; there is no automatic recovery authorization.
+- Once a migration, index reconciliation or smoke receipt exists (including running or failed receipts), use R1 with a completed verification receipt for the exact selected manifest. A smoke failure cannot be repaired by editing smoke values on the contained attempt. Restore the verified baseline, then begin a fresh reviewed upgrade attempt. If no eligible backup can be established despite mutation evidence, keep writers stopped and escalate; neither R1 nor a fresh upgrade is safe to authorize from those receipts.
 
-```sh
-mongosh "$MONGO_URL" --quiet --eval '
-printjson(db.preferences.aggregate([
-  {$match: {type: {$in: ["USER_WORKFLOW", "WORKFLOW_RESOURCE"]}}},
-  {$group: {
-    _id: {env: "$_environmentId", template: "$_templateId", type: "$type"},
-    rows: {$push: {id: "$_id", deleted: "$deleted"}}, count: {$sum: 1}
-  }},
-  {$match: {count: {$gt: 1}}}
-]).toArray());
-'
-```
+R1 pins chart `b6f40fb6ab529119dd34bd47e6acaa16815240d9` and the **complete** saved 2.1 values/configuration from main, including web hostname/CSP and existing credentials/claims. A second immutable source contains standalone quiesce/restore, PostSync smoke and SyncFail hooks; changing only server image tags is insufficient. `upgrade.mode=restore` deliberately fails rendering on the 3.19 chart to prevent accidental 3.19 Sync after restore.
 
-Export the full documents for each collision group to the protected backup location, review live channel opt-outs separately, and record the exact tombstone IDs approved for physical deletion as an Extended JSON array in `/backup/preference-tombstone-ids.json`. Include all colliding tombstones; for tombstone-only groups, deletion must not create a live preference. Skip the deletion command when no tombstones need reconciliation. This manifest is specific to the selected database and maintenance snapshot; never reuse the rehearsal manifest on live data.
+The restore quiesce Job stops writer and datastore StatefulSet Pods. Only then can the restore Job mount the existing RWO claims. It downloads the selected manifest generations, verifies them again on isolated processes, empties the Mongo data directory, restores **all** archived databases/users/indexes and verifies the inventory. Redis persistence is rebuilt from the RDB, including a completed AOF rewrite before shutdown; stale AOF files cannot override the recovered RDB. The old chart restarts datastores and 2.1 workloads in Sync. R1 PostSync smoke then validates API/WS health and the existing HMAC inbox session in restore mode before recording `recovered`; an apply failure after data restore still contains writers. Retire the separate R1 source/hooks as required in [R1](R1-RESTORE.md) before ordinary syncs resume. No Terraform permission extension, Pod exec or runner-created Kubernetes resource is needed.
 
-```sh
-mongosh "$MONGO_URL" --quiet --eval '
-const ids = EJSON.parse(require("fs").readFileSync("/backup/preference-tombstone-ids.json", "utf8"));
-if (!Array.isArray(ids) || !ids.length || new Set(ids.map(id => id.toHexString())).size !== ids.length) {
-  throw new Error("Expected a nonempty reviewed array of distinct ObjectIds");
-}
-const preferences = db.getCollection("preferences");
-const types = {type: {$in: ["USER_WORKFLOW", "WORKFLOW_RESOURCE"]}};
-const filter = {...types, deleted: true, _id: {$in: ids}};
-const total = preferences.countDocuments({});
-const live = preferences.countDocuments({...types, deleted: {$ne: true}});
-if (preferences.countDocuments(filter) !== ids.length) {
-  throw new Error("Manifest does not match current workflow tombstones; stop and reconcile");
-}
-const result = preferences.deleteMany(filter);
-if (!result.acknowledged || result.deletedCount !== ids.length || preferences.countDocuments(filter) !== 0 ||
-    preferences.countDocuments({}) !== total - ids.length ||
-    preferences.countDocuments({...types, deleted: {$ne: true}}) !== live) {
-  throw new Error("Preference tombstone cleanup postcondition failed");
-}
-printjson({database: db.getName(), deleted: result.deletedCount, live});
-'
-```
+R1 is a separate reviewed operation/attempt with the original verified manifest object/generation/SHA-256. Never choose `latest`. Failure during restore remains closed and requires investigation; do not retry destructively by deleting receipts. After baseline health/session/HMAC/topics/bridge/Mailpit checks, record recovery duration and reconcile lost events/possible duplicate deliveries. Keep backups through the rollback window.
 
-Run the patched live-preference deduplication next, then repeat the raw collision audit and require zero groups before creating indexes. Rehearse live+deleted and deleted+deleted collisions for both types, preserved live opt-outs, and manifest/deletion-count failures. Archive tombstones outside the application database; rollback restores the coordinated pre-upgrade backup. A partial deletion or failed postcondition blocks progression and requires a fresh inventory, not a blind rerun.
+## Validation and rollout gates
 
-### Execute upstream migrations
+Local checks: `helm dependency build charts/novu`, `helm lint charts/novu`, `bun scripts/verify-upgrade.ts`. The render script compares disabled output byte-for-byte with #5 at `b8ed8a841a4c113677d5d2dd20833f40b85de3c0` using identical fixed test datastore passwords, and asserts enabled hook annotations/waves, identity, labels, resources, deadlines and unsafe-input rejection. Chart-testing skips GitHub maintainer-account validation because the inherited Chart.yaml lists upstream display names; chart schema, YAML lint and install checks remain enabled. Chart CI runs the same script; the fork's Actions must be enabled for remote checks.
 
-Run only the audited applicable steps, in order, with auto-index creation disabled, using the immutable patched runner above:
-
-```sh
-pnpm exec ts-node --transpileOnly ./migrations/preferences-uniqueness/preferences-uniqueness-migration.ts
-```
-
-```sh
-pnpm exec ts-node --transpileOnly ./migrations/001-add-default-identifier-to-topic-subscribers/add-default-identifier-to-topic-subscribers-migration.ts
-```
-
-```sh
-pnpm exec ts-node --transpileOnly ./migrations/002-remove-duplicate-identifiers/remove-duplicate-identifiers.ts
-```
-
-```sh
-pnpm exec ts-node --transpileOnly ./migrations/email-step-ui-schema-html-editor/email-step-ui-schema-html-editor-migration.ts
-```
-
-```sh
-pnpm exec ts-node --transpileOnly ./migrations/add-layout-id-to-email-controls/add-layout-id-to-email-controls-migration.ts
-```
-
-```sh
-pnpm exec ts-node --transpileOnly -e 'require("./src/config"); (async()=>{const dal=new (require("@novu/dal").DalService)();try{await dal.connect(process.env.MONGO_URL);await require("./migrations/agent-subscriber-access-default/agent-subscriber-access-default.migration").run();}finally{await dal.disconnect();}})().then(()=>process.exit(0)).catch(e=>{console.error(e);process.exit(1)})'
-```
-
-```sh
-pnpm exec ts-node --transpileOnly -e 'require("./src/config"); (async()=>{const dal=new (require("@novu/dal").DalService)();try{await dal.connect(process.env.MONGO_URL);await require("./migrations/infobip-sms-base-url/deactivate-misconfigured-infobip-sms-integrations.migration").deactivateMisconfiguredInfobipSmsIntegrations();}finally{await dal.disconnect();}})().then(()=>process.exit(0)).catch(e=>{console.error(e);process.exit(1)})'
-```
-
-Only after the rollback window, if separately scheduled:
-
-```sh
-pnpm exec ts-node --transpileOnly ./migrations/deleteLogs/dropLogsCollection.ts
-```
-
-The five patched scripts propagate failures; other upstream scripts can still catch/log errors. A completed Job is not proof of migration success: require the postconditions below before advancing. Historical files with logic changes (`encrypt-api-keys`, `encrypt-credentials`, subscriber dedup, `changes-migration.ts`) are **not** new mandatory upgrade steps; audit existing encryption/dedup state instead of rerunning them. Other historical changes are formatting/import/logger changes; `subscriber-preferences-level` was removed. The six new `clickhouse-migrations/{1_initial_schema,2_add_workflow_id_to_schema,3_analytics_tables,4_refactor_traces_schema,5_finalize_table_exchange,6_add_source_to_requests}.sql` files are inapplicable without ClickHouse. `msteams-multi-tenant/README.md` describes Azure re-consent, not a Mongo migration.
-
-## Migration verification and indexes
-
-From a tools Job with the actual application `MONGO_URL`, capture collection counts and index definitions before and after. Do not output document credentials. These read-only checks run against the URI's selected database:
-
-```sh
-mongosh "$MONGO_URL" --quiet --eval '
-print("database=" + db.getName());
-for (const name of db.getCollectionNames().sort()) {
-  printjson({name, count: db.getCollection(name).countDocuments({}), indexes: db.getCollection(name).getIndexes()});
-}
-printjson({missingTopicIdentifiers: db.topicsubscribers.countDocuments({identifier: {$exists: false}})});
-printjson(db.topicsubscribers.aggregate([
-  {$match: {identifier: {$exists: true}}},
-  {$group: {_id: {env: "$_environmentId", identifier: "$identifier"}, count: {$sum: 1}}},
-  {$match: {count: {$gt: 1}}}, {$count: "duplicateGroups"}
-]).toArray());
-for (const type of ["SUBSCRIBER_GLOBAL", "SUBSCRIBER_WORKFLOW", "USER_WORKFLOW", "WORKFLOW_RESOURCE"]) {
-  const key = {env: "$_environmentId"};
-  if (type.startsWith("SUBSCRIBER_")) {
-    key.subscriber = "$_subscriberId";
-    key.contextKeysHash = {$ifNull: ["$contextKeysHash", "DEFAULT_CONTEXT"]};
-    key.contextKeys = {$sortArray: {input: {$ifNull: ["$contextKeys", []]}, sortBy: 1}};
-  }
-  if (type !== "SUBSCRIBER_GLOBAL") key.template = "$_templateId";
-  printjson({type, duplicates: db.preferences.aggregate([
-    {$match: {type}}, {$group: {_id: key, count: {$sum: 1}}},
-    {$match: {count: {$gt: 1}}}, {$count: "groups"}
-  ]).toArray()});
-}'
-```
-
-Confirm collection names against the inventory before interpreting results. Recheck the legacy message cleanup counts and saved live-message samples before opening traffic. Require zero unresolved missing topic identifiers/duplicate groups for the legacy dataset. Review null/empty identifiers separately. Require zero raw workflow preference collision groups, including `deleted:true` rows; the Mongoose migration alone cannot establish this. Compare deleted counts with reviewed tombstone and survivor manifests and preserve representative preference values, including channel opt-outs. The audit uses the patched runner's context-aware grouping. Separately check the target unique index keys for collisions caused by inconsistent context hashes; reconcile those records without deleting valid distinct contexts.
-
-For email UI fields compare affected template IDs and resulting body/editorType properties against the migration's exact $set values; check zero remaining templates matching the layout migration filter and inspect partial layouts. For agents require no missing behavior.subscriberAccess and correct managed/open versus restricted values. For Infobip verify only reviewed integration IDs were deactivated and no SendGrid flags or credentials changed. Confirm all other entity counts unchanged except approved deduplication, including organizations/environments/workflows/subscribers/topics.
-
-Compare the target DAL schemas' desired indexes to saved `getIndexes()` output, including uniqueness and partial filters. Topic subscriptions require unique `{_environmentId:1, identifier:1}`. Preferences include contextKeysHash partial indexes and a workflow type partial index; don't replace these with a blanket uniqueness constraint. Schema sources: [topic subscriptions](https://github.com/novuhq/novu/blob/v3.19.0/libs/dal/src/repositories/topic/topic-subscribers.schema.ts), [preferences](https://github.com/novuhq/novu/blob/v3.19.0/libs/dal/src/repositories/preferences/preferences.schema.ts).
-
-After approved dedup/backfills, remove **only** reviewed conflicting obsolete index names, with the exact `db.<collection>.dropIndex("<reviewed-name>")` operations recorded during rehearsal. Do not call blanket `dropIndexes()` or `syncIndexes()`. In a separate source runner Job, after inventorying the loaded model list, create target indexes without automatically deleting old ones:
-
-```sh
-pnpm exec ts-node --transpileOnly -e 'require("./src/config"); (async()=>{const {DalService,mongoose}=require("@novu/dal");const dal=new DalService();try{await dal.connect(process.env.MONGO_URL);for(const name of mongoose.modelNames()){const model=mongoose.model(name);console.log(name,JSON.stringify(model.schema.indexes()));await model.createIndexes();}}finally{await dal.disconnect();}})().then(()=>process.exit(0)).catch(e=>{console.error(e);process.exit(1)})'
-```
-
-Verify the loaded model list covers the target collections and every expected index exists; require no E11000 or index option/name conflicts. This command's build/runtime viability must be established in rehearsal. Only then allow application startup auto-indexing. Snapshot the migrated rehearsal data and exercise the entire consumer matrix before scheduling live execution.
-
-## Scheduled rollout and acceptance
-
-1. Repeat the maintenance barrier and validated backups with fresh live data. Execute the same reviewed migration commands and postconditions, with the same immutable runner images and indexes disabled. Reconcile indexes.
-2. With traffic blocked, deploy 3.19 API and WS first, worker held at zero replicas and auto-indexing disabled by the pinned staging values. Start dashboard on its new host and verify DNS, certificate and IP restriction. Keep producers paused.
-3. Run the existing Activity Centre workflow sync Job against the API. Preserve code-first workflow identifiers, bridge URL and signing key. Verify repeated sync is idempotent. Start the 3.19 worker, then run approved synthetic traffic. Never briefly start all components against unmigrated data through a normal unattended sync.
-4. All four deployments must pass startup/readiness/liveness: API/WS `/<contextPath>/v1/health-check` on 3000/3002 (or `/v1/health-check` with an empty context), worker `/v1/health-check` on 3004, dashboard `/` on 4000. API/WS context values are normalized by trimming surrounding slashes for both the environment and probes. The worker internal API_ROOT_URL appends the same normalized API context path. Confirm process counts, Mongo pools, no E11000/SSRF/decryption errors, stable memory/restarts, queue drain and representative p95 latency.
-5. Complete the acceptance matrix below and attach evidence, expected/actual counts, logs, backup identifiers and restore timings. Open traffic only after owner acceptance. Prune obsolete frontend resources deliberately. Restore desired replica counts and reconcile overrides; leave future promotion manual.
-
-| Consumer | Required acceptance |
-| --- | --- |
-| Dashboard | CE email/password login/logout, existing users/orgs/environments visible, registration rejected, assets and deep links load, clean CSP/CORS console, IP restriction and TLS valid. Inventory old UI workflow visibility separately. |
-| Activity Centre `@novu/framework` 2.13 | Signed discover and execute via the unchanged `/audit-log-service-api/novu` URL; no SSRF block; sync Job succeeds twice without changing workflow identities; actual workflow execution and digest/retry behavior. Target framework source is 2.13.0. |
-| Browser SDK 3.1.0 | `POST /v1/inbox/session` with **top-level** applicationIdentifier/subscriberId/subscriberHash returns usable session/token; notification listing, read/unread, preferences and Socket.IO realtime work. [Target DTO](https://github.com/novuhq/novu/blob/v3.19.0/apps/api/src/app/inbox/dtos/subscriber-session-request.dto.ts) retains the legacy field; [use case](https://github.com/novuhq/novu/blob/v3.19.0/apps/api/src/app/inbox/usecases/session/session.usecase.ts) falls back to it. Live behavior remains a rollout gate. |
-| `@novu/api` 1.8.0 | From **both proda-core-api and excelsior**, subscriber lookup, topic subscribe/unsubscribe with `{subscriberIds:[...]}` and topic fanout; check SDK response parsing and swallowed warnings. Target [create](https://github.com/novuhq/novu/blob/v3.19.0/apps/api/src/app/topics-v2/dtos/create-topic-subscriptions.dto.ts)/[delete DTOs](https://github.com/novuhq/novu/blob/v3.19.0/apps/api/src/app/topics-v2/dtos/delete-topic-subscriptions.dto.ts) retain the old payload. |
-| SendGrid/email | Preserve `sendgrid` provider, `apiKey`, `from`, `senderName`, active/primary flags and encryption key. An env SENDGRID_API_KEY cannot replace stored integration credentials. One owner-approved delivery with rendered body and one in-app delivery; use Mailpit where staging routes there, and separately verify SendGrid decryption/config. Never send a production test email during isolated rehearsal. |
-| HMAC | Preserve integration hmac=true and environment API keys. HMAC-SHA256(key=environment API key, message=subscriberId), hex; correct accepted, wrong/missing rejected. JWT_SECRET/NOVU_SECRET_KEY are not the hashing key. |
-
-## Rollback
-
-Trigger rollback on failed migration postconditions, lost preferences/data, authentication or consumer failures, stuck queues, sustained errors/OOMs, or the agreed downtime deadline. Pause producers/traffic/sync Jobs and stop **all** 3.19 writers; suspend Argo self-heal/parent reconciliation. Save failure evidence before changing state.
-
-Restore chart pin `b6f40fb6ab529119dd34bd47e6acaa16815240d9` **and** the full matching pre-upgrade values/CSP/sync-policy snapshot. This restores `web` keys, host, resources and 2.1 images; a pin-only rollback with dashboard values is invalid. Keep automation paused during restore.
-
-A revision-only rollback is allowed only if no migrations (including legacy message cleanup), index changes or 3.19 writes occurred, or restored-copy rehearsal proved that exact data state compatible. Otherwise restore the coordinated pre-upgrade Mongo data **and indexes**, original credentials/config and matching Redis disk snapshot/AOF into fresh same-version storage. Do not point 2.1 at unverified 3.19-written data or flush queues. Use the validated `mongorestore` procedure above or validated disk snapshots; verify users/auth, all databases, counts, indexes, preferences and integrations before attaching applications. Reattach the restored claims/endpoints using the rehearsed plan; retain original PVCs/snapshots until acceptance.
-
-Start all 2.1 components, verify baseline login/session/HMAC/topics/bridge/email and queue behavior, then reopen traffic and resume producers only after owner acceptance. A data restore loses post-backup writes; reconcile/replay source events deliberately and account for already-sent mail to avoid duplicate delivery. Record recovery duration and residual discrepancies. Do not delete obsolete logs until the rollback window closes.
-
-## Outstanding owner gates
-
-Verify that #8848 pins the merged chart head and that the exact bridge FQDN appears in both rendered server environments; confirm staging keeps the new messages response off; new dashboard DNS/TLS; actual database name, versions, PVC capacity and recoverable snapshots; legacy preference centralization applicability/replica-set rehearsal; duplicate survivor decisions and index reconciliation; immutable migration runner builds and restored-data execution; browser/consumer/provider smoke tests and representative resource measurements. None of these live checks was performed by this implementation task. Other regions need separate values/host/CSP updates and reviewed pins before rollout.
+Before L4 activation, require a published digest, applied L1 outputs, WI/image-pull checks, a restored-data migration and full R1 rehearsal, killed-Job/upload-loss/collision/short-write/deadline/repeated-sync failure injection, and full consumer acceptance: dashboard login/registration guard, SDK 3.1 inbox/realtime/preferences, framework 2.13 discovery/execution and repeated sync, both @novu/api topic callers, HMAC invalid/missing rejection, Mailpit delivery, and stored SendGrid credential decryption without sending real staging mail. Verify dashboards/DNS/TLS/CSP, queues, error rates, memory and latency. Automated smoke proves only its listed subset. No live rehearsal or deployment is implied by Helm or unit-test success.

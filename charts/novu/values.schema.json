@@ -433,6 +433,202 @@
       "required": [
         "enabled"
       ]
+    },
+    "upgrade": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "image",
+        "bucket",
+        "serviceAccountName",
+        "operationStateName",
+        "operationId",
+        "attemptId",
+        "syncRevision",
+        "mode",
+        "deadlines",
+        "resources",
+        "smoke",
+        "workVolumeSize",
+        "indexDrops"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "image": {
+          "type": "string",
+          "pattern": "^$|^\\S+@sha256:[a-f0-9]{64}$"
+        },
+        "bucket": {
+          "const": "proda-staging-636c0f80-novu-upgrade"
+        },
+        "serviceAccountName": {
+          "const": "novu-upgrade"
+        },
+        "operationStateName": {
+          "const": "novu-upgrade-state"
+        },
+        "operationId": {
+          "type": "string",
+          "pattern": "^$|^[a-z0-9][a-z0-9-]{0,47}$"
+        },
+        "attemptId": {
+          "type": "string",
+          "pattern": "^$|^[a-z0-9][a-z0-9-]{0,47}$"
+        },
+        "syncRevision": {
+          "type": "string",
+          "pattern": "^$|^[a-f0-9]{40}$"
+        },
+        "mode": {
+          "enum": [
+            "upgrade",
+            "restore"
+          ]
+        },
+        "indexDrops": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "collection",
+              "name",
+              "definitionSha256"
+            ],
+            "properties": {
+              "collection": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "definitionSha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              }
+            }
+          }
+        },
+        "workVolumeSize": {
+          "type": "string"
+        },
+        "resources": {
+          "type": "object",
+          "required": [
+            "requests",
+            "limits"
+          ],
+          "properties": {
+            "requests": {
+              "type": "object",
+              "required": [
+                "cpu",
+                "memory",
+                "ephemeral-storage"
+              ]
+            },
+            "limits": {
+              "type": "object",
+              "required": [
+                "cpu",
+                "memory",
+                "ephemeral-storage"
+              ]
+            }
+          }
+        },
+        "deadlines": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "quiesce",
+            "backup",
+            "verify",
+            "precheck",
+            "migrate",
+            "reconcile-indexes",
+            "smoke",
+            "failure"
+          ],
+          "properties": {
+            "quiesce": {
+              "type": "integer",
+              "minimum": 30,
+              "maximum": 3600
+            },
+            "backup": {
+              "type": "integer",
+              "minimum": 30,
+              "maximum": 3600
+            },
+            "verify": {
+              "type": "integer",
+              "minimum": 30,
+              "maximum": 3600
+            },
+            "precheck": {
+              "type": "integer",
+              "minimum": 30,
+              "maximum": 3600
+            },
+            "migrate": {
+              "type": "integer",
+              "minimum": 30,
+              "maximum": 3600
+            },
+            "reconcile-indexes": {
+              "type": "integer",
+              "minimum": 30,
+              "maximum": 3600
+            },
+            "smoke": {
+              "type": "integer",
+              "minimum": 30,
+              "maximum": 3600
+            },
+            "failure": {
+              "type": "integer",
+              "minimum": 30,
+              "maximum": 3600
+            }
+          }
+        },
+        "smoke": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "subscriberId",
+            "applicationIdentifier",
+            "apiKeySecretName",
+            "apiKeySecretKey"
+          ],
+          "properties": {
+            "subscriberId": {
+              "type": "string"
+            },
+            "applicationIdentifier": {
+              "type": "string"
+            },
+            "apiKeySecretName": {
+              "type": "string"
+            },
+            "apiKeySecretKey": {
+              "type": "string"
+            }
+          }
+        },
+        "infobipIntegrationIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{24}$"
+          }
+        }
+      }
     }
   },
   "additionalProperties": false,
