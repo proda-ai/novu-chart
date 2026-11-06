@@ -81,8 +81,74 @@ A Deployment exceeding `progressDeadlineSeconds` ([Kubernetes default 600s unles
 
 1. In the verified EU staging context, run `argocd app get "$NOVU_APP" -o json | jq '{operation: (.status.operationState | {phase, startedAt, message}), resources: .status.resources}'` and `kubectl -n novu get deployments,pods,jobs,events`. Identify the completed migrate receipt, still-Progressing resources, Deployment conditions/deadlines and missing PostSync/SyncFail execution. `NOVU_APP` is the verified EU staging Novu Application name.
 2. Disable child auto-sync in the Git-owned Application (remove `spec.syncPolicy.automated`, keep `retry.limit:0`); ensure the parent has reconciled this before proceeding so it cannot undo a live-only toggle. Archive current Job/Pod status, timestamped logs and receipts, then run `argocd app terminate-op "$NOVU_APP"`. Confirm the operation has stopped and all runner Pods have terminated; prevent concurrent manual syncs/retries during containment.
-3. Read `kubectl -n novu get configmap novu-upgrade-state -o json`. Match `data.active.inputHash` (decode the JSON stored in `data.active`) to the affected attempt's migrate receipt and verify its operation, attempt and revision against the stopped sync. Check the owner and receipts again immediately before scaling; stop and escalate on missing, malformed, changed or mismatched ownership. A `complete` or `recovered` owner requires its matching completed smoke receipt and evidence: do not scale that terminal operation down because obsolete hooks failed. For the verified nonterminal owner (`running`, `restored` or `contained`), run `kubectl -n novu scale deployment novu-api novu-worker novu-ws --replicas=0`; verify each Deployment's desired replicas is zero and no Pods matching its `spec.selector.matchLabels` remain. Keep sync disabled so reconciliation cannot restart writers.
-4. Record UTC times, operation/attempt/revision/inputHash, ConfigMap resourceVersion and receipts, Argo operation/resource health, Deployment conditions, Job/Pod statuses/events/logs, replica counts and containment result with the immutable evidence references. Do not edit/clear receipts or mark the owner `contained` manually: manual scaling is not a successful runner failure receipt. Escalate immediately to the **EU staging platform on-call and the Novu upgrade owner for WEB-6859**, including any ownership ambiguity or failure to stop writers. Keep writers stopped and sync disabled until they approve the reviewed recovery path below.
+3. Read `kubectl -n novu get configmap novu-upgrade-state -o json`. Match `data.active.inputHash` (decode the JSON stored in `data.active`) to the affected attempt's migrate receipt (restore receipt for interrupted R1) and verify its operation, attempt and revision against the stopped sync. Check the owner and receipts again immediately before scaling; stop and escalate on missing, malformed, changed or mismatched ownership. A `complete` or `recovered` owner requires its matching completed smoke receipt and evidence: do not scale that terminal operation down because obsolete hooks failed. For the verified nonterminal owner (`running`, `restored` or `contained`), run `kubectl -n novu scale deployment novu-api novu-worker novu-ws --replicas=0`; verify each Deployment's desired replicas is zero and no Pods matching its `spec.selector.matchLabels` remain. Keep sync disabled so reconciliation cannot restart writers.
+4. Run standalone failure containment below with the **stopped operation's original inputs**, then require a successful Job, the same owner's `contained` status and a completed failure receipt with immutable evidence before R1. Argo CD v2.13.2's pinned [`Terminate()`](https://github.com/argoproj/gitops-engine/blob/bd7681ae3f8b/pkg/sync/sync_context.go#L1067-L1097) deletes running hooks and sets the operation phase directly; it does not run SyncFail hooks. Manual scaling alone leaves the runner owner `running`, which blocks R1's new quiesce claim. Do not edit/clear receipts or mark the owner `contained` manually.
+5. Record UTC times, operation/attempt/revision/inputHash, ConfigMap resourceVersion and receipts, Argo operation/resource health, Deployment conditions, Job/Pod statuses/events/logs, replica counts and containment result with the immutable evidence references. Escalate immediately to the **EU staging platform on-call and the Novu upgrade owner for WEB-6859**, including any ownership ambiguity, containment failure or failure to stop writers. Keep writers stopped and sync disabled until they approve the reviewed recovery path below.
+
+### Standalone failure containment
+
+Use an operator with Job creation, Deployment scaling and Job/state/Pod/log read access in `novu`; the Job uses the existing L1 `novu-upgrade` service account and Workload Identity. Require Helm, Mike Farah `yq` v4, `jq` and `kubectl`. Run the blocks in the same Bash shell with tracing off. Set `ORIGINAL_CHART_DIR` to an absolute checkout of the stopped operation's exact chart source SHA with its locked chart dependencies available, and `ORIGINAL_VALUES` to an absolute, access-restricted YAML file containing that operation's complete effective Helm values. Use the archived activation inputs, not current main or R1 values. Preserve the runner digest, operation/attempt, sync revision, mode, bucket/state name, approved index drops/Infobip IDs, Secret references and their original bytes; changed inputs cannot claim the original owner. Do not change the attempt ID to run containment.
+
+After steps 1–3 above, render only the hook template into a private scratch directory outside the checkout. This does not apply workloads:
+
+```sh
+set -eu
+set -o pipefail
+: "${ORIGINAL_CHART_DIR:?Set the original chart checkout path}"
+: "${ORIGINAL_VALUES:?Set the original effective Helm values file}"
+umask 077
+CONTAINMENT_DIR=$(mktemp -d "${TMPDIR:-/tmp}/novu-containment.XXXXXX")
+helm template novu "$ORIGINAL_CHART_DIR/charts/novu" --namespace novu \
+  --values "$ORIGINAL_VALUES" --show-only templates/upgrade-jobs.yaml \
+  > "$CONTAINMENT_DIR/hooks.yaml"
+```
+
+For containment of a terminated R1 operation instead, replace the entire block above with the following, setting `ORIGINAL_R1_JOBS` to its archived, fully resolved standalone `jobs.yaml`. Preserve its original `MODE=restore` and selected backup object/generation/checksum as well as the other inputs. Do not render the 3.19 chart in restore mode. The subsequent selection accepts exactly one failure Job from either source.
+
+```sh
+set -eu
+set -o pipefail
+: "${ORIGINAL_R1_JOBS:?Set the original resolved R1 jobs.yaml path}"
+umask 077
+CONTAINMENT_DIR=$(mktemp -d "${TMPDIR:-/tmp}/novu-containment.XXXXXX")
+cp "$ORIGINAL_R1_JOBS" "$CONTAINMENT_DIR/hooks.yaml"
+```
+
+Create a fresh standalone Job name so retained hook Jobs and evidence are not overwritten. Replace only Job metadata, removing Argo hook/tracking metadata while retaining the complete Pod spec, runner labels, identity, Secret references and failure arguments. After this block, review the generated JSON against the stopped operation before creating the Job; do not proceed on any mismatch.
+
+```sh
+yq -o=json '.' "$CONTAINMENT_DIR/hooks.yaml" | jq -se '
+  [.[] | select(.kind == "Job" and .spec.template.spec.containers[0].args == ["failure"])]
+  | if length == 1 then .[0] else error("Expected exactly one failure Job") end
+  | .metadata = {
+      generateName: "novu-upgrade-manual-failure-",
+      namespace: "novu",
+      labels: {"tags.datadoghq.com/env": "staging", "tags.datadoghq.com/service": "novu-upgrade"}
+    }
+' > "$CONTAINMENT_DIR/failure.json"
+```
+
+Recheck the nonterminal owner against step 3 immediately before creation. `EXPECTED_INPUT_HASH` must be the exact hash already verified there. The runner independently requires its computed input hash to match the active owner, stops/verifies writers, rejects other active runners, uploads evidence and records `contained`; it restores no data. Keep concurrent syncs and runners excluded throughout.
+
+```sh
+: "${EXPECTED_INPUT_HASH:?Set the verified stopped operation inputHash}"
+kubectl -n novu get configmap novu-upgrade-state -o json | jq -e --arg hash "$EXPECTED_INPUT_HASH" '
+  .data.active | fromjson
+  | .inputHash == $hash and (.status == "running" or .status == "restored" or .status == "contained")
+'
+CONTAINMENT_JOB=$(kubectl -n novu create -f "$CONTAINMENT_DIR/failure.json" -o name)
+kubectl -n novu wait --for=condition=complete --timeout=660s "$CONTAINMENT_JOB"
+kubectl -n novu logs "$CONTAINMENT_JOB" --all-containers=true --timestamps
+kubectl -n novu get configmap novu-upgrade-state -o json > "$CONTAINMENT_DIR/state-after.json"
+jq -e --arg hash "$EXPECTED_INPUT_HASH" '
+  (.data.active | fromjson | .inputHash == $hash and .status == "contained") and
+  ([.data | to_entries[] | select(.key | startswith("r-")) | .value | fromjson
+    | select(.inputHash == $hash and .step == "failure" and .status == "complete"
+      and .result.contained == true and .evidence.name and .evidence.generation and .evidence.sha256)] | length == 1)
+' "$CONTAINMENT_DIR/state-after.json"
+```
+
+If creation, waiting or either state check fails, stop and escalate; do not launch R1 or clear ownership. Archive the standalone Job/Pod status, logs and the failure receipt's immutable evidence reference with the original operation, and confirm its Pod has terminated before recovery. A successful failure receipt and matching `contained` owner allow a fresh R1 quiesce claim; the selected backup must still have completed verification. Keep sync disabled and writers stopped until the reviewed recovery starts.
 
 Traffic and queue consumption resume during Sync, before PostSync smoke. Activity Centre triggers during downtime fail and are logged; there is no outbox. A later R1 restore loses writes since the backup and can replay queued notifications already delivered during the 3.19 window. This is the accepted staging trade-off. Do not describe recovery as lossless or auto-restore in a loop.
 
