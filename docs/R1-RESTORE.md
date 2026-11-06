@@ -14,7 +14,7 @@ targetRevision: REPLACE_REVIEWED_RESTORE_SOURCE_SHA
 path: applications/novu-restore-staging
 ```
 
-Keep this directory outside environments/staging so the parent Application does not also discover and own these Jobs. Set the child retry limit to zero, automated prune true/selfHeal false, and retain all baseline ignoreDifferences/RespectIgnoreDifferences and secret ownership. Keep other Applications unchanged. The saved full baseline restores web/config/routing as well as images. Review pruning of the obsolete dashboard resources in R1's diff.
+Keep this directory outside environments/staging so the parent Application does not also discover and own these Jobs. Set the child retry limit to zero and remove `spec.syncPolicy.automated` in the reviewed R1 Application change; keep auto-sync disabled until retirement is verified below. Retain all baseline ignoreDifferences/RespectIgnoreDifferences and secret ownership. After the parent reconciles R1, run one full manual sync with pruning (`argocd app sync "$NOVU_APP" --prune`), where `NOVU_APP` is the verified EU staging Novu Application name. Keep other Applications unchanged. The saved full baseline restores web/config/routing as well as images. Review pruning of the obsolete dashboard resources in R1's diff.
 
 The second source must point to the committed immutable restore-Job source SHA. Commit those Job files first, then pin that commit in the R1 Application change. SYNC_REVISION identifies the first (chart) source, b6f40fb6ab529119dd34bd47e6acaa16815240d9; this avoids a self-referential Git SHA. Use a new restore operation/attempt; choose the original backup manifest object/generation/SHA-256. It must have a completed verification receipt in novu-upgrade-state. Confirm all previous operation Jobs terminated. A failed restore is not permission for a fresh destructive retry; investigate/contain it first.
 
@@ -43,3 +43,16 @@ Write the following as jobs.yaml. Both datastore mounts appear only on the secon
 ```
 
 R1 Sync starts the old datastores and writers after the restore receipt succeeds. Verify baseline API/WS health, old web login, HMAC session, topics, bridge and Mailpit, and record recovery time and lost/replayed work. Retain the original immutable backup. Never merge this template with unresolved pins, blindly reset receipts, or auto-loop restore.
+
+Recovery is not finished until a reviewed follow-up change retiring the separate R1 source/hooks has merged and the parent has reconciled the Application. Before ordinary syncs resume, remove the second `applications/novu-restore-staging` source, return the complete saved baseline chart source to `spec.source`, and remove restore-only values/inputs. Keep auto-sync disabled throughout; preserve baseline values, ConfigMap receipts and the immutable backup, and archive Job/Pod status and logs before retirement. Setting the 3.19 chart's `upgrade.enabled:false` does **not** remove this separate R1 source.
+
+A repeated restore Pod must acquire both RWO mounts before it can read and skip its completed receipt; with recovered datastores running, it can wait in Multi-Attach until its deadline. The runner's terminal `restored` guard prevents a later failure hook from re-containing that owner, but cannot prevent the mount deadlock or replace mandatory retirement.
+
+Confirm the live Application has only the saved baseline source and its desired manifests contain no R1/upgrade hooks. With auto-sync still disabled, verify the next full sync succeeds and creates no restore or failure Jobs (the assertion rejects every `novu-upgrade-*` Job in that sync's results, including R1 hooks; previously retained Jobs may remain):
+
+```sh
+argocd app sync "$NOVU_APP" --prune &&
+argocd app get "$NOVU_APP" -o json | jq -e '.status.operationState.phase == "Succeeded" and ([.status.operationState.syncResult.resources[]? | select(.kind == "Job" and (.name | startswith("novu-upgrade-")))] | length == 0)'
+```
+
+Record this result with recovery evidence, then restore the ordinary auto-sync policy through a reviewed Git change. Do not re-enable it if verification fails.

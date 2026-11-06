@@ -65,7 +65,11 @@ try {
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, new RegExp(`upgrade.smoke.${key} requires a resolved smoke input`));
   }
-  const restoreYaml = [...readFileSync('docs/R1-RESTORE.md', 'utf8').matchAll(/^```yaml\n([\s\S]*?)^```/gm)].at(-1)![1].replaceAll('REPLACE_VERIFIED_GENERATION', '1730995200123456');
+  const restoreBlocks = [...readFileSync('docs/R1-RESTORE.md', 'utf8').matchAll(/^```yaml\n([\s\S]*?)^```/gm)].map((match) => match[1]);
+  for (const block of restoreBlocks) {
+    for (const document of block.split(/^---\s*$/m)) assert.ok(Bun.YAML.parse(document));
+  }
+  const restoreYaml = restoreBlocks.at(-1)!.replaceAll('REPLACE_VERIFIED_GENERATION', '1730995200123456');
   const restoreJobs = restoreYaml.split(/^---\s*$/m).map((document) => Bun.YAML.parse(document) as any);
   assert.equal(restoreJobs.length, 3);
   for (const job of restoreJobs) {
