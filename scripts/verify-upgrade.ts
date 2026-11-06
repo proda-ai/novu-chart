@@ -66,12 +66,14 @@ try {
     assert.match(result.stderr, new RegExp(`upgrade.smoke.${key} requires a resolved smoke input`));
   }
   const restoreBlocks = [...readFileSync('docs/R1-RESTORE.md', 'utf8').matchAll(/^```yaml\n([\s\S]*?)^```/gm)].map((match) => match[1]);
-  for (const block of restoreBlocks) {
-    for (const document of block.split(/^---\s*$/m)) assert.ok(Bun.YAML.parse(document));
+  for (const path of ['docs/R1-RESTORE.md', 'docs/UPGRADE-3.19-RUNBOOK.md']) {
+    for (const [, block] of readFileSync(path, 'utf8').matchAll(/^```yaml\n([\s\S]*?)^```/gm)) {
+      for (const document of block.split(/^---\s*$/m)) assert.ok(Bun.YAML.parse(document));
+    }
   }
   const restoreYaml = restoreBlocks.at(-1)!.replaceAll('REPLACE_VERIFIED_GENERATION', '1730995200123456');
   const restoreJobs = restoreYaml.split(/^---\s*$/m).map((document) => Bun.YAML.parse(document) as any);
-  assert.equal(restoreJobs.length, 3);
+  assert.equal(restoreJobs.length, 4);
   for (const job of restoreJobs) {
     assert.equal(job.kind, 'Job');
     for (const env of job.spec.template.spec.containers[0].env) {
@@ -79,7 +81,27 @@ try {
     }
     assert.equal(job.spec.template.spec.containers[0].env.find((env: any) => env.name === 'BACKUP_GENERATION').value, '1730995200123456');
   }
-  console.log('PASS: disabled render equals #5; enabled hooks, waves, identity, labels, deadlines and unsafe-input guards');
+  const restoreExpected = [['quiesce', 'PreSync', '-60'], ['restore', 'PreSync', '-50'], ['smoke', 'PostSync', '10'], ['failure', 'SyncFail', '0']];
+  const restoreEnv = restoreJobs[0].spec.template.spec.containers[0].env;
+  for (const [step, phase, wave] of restoreExpected) {
+    const job = restoreJobs.find((item) => item.metadata.name === `novu-upgrade-r1-${step}`);
+    assert.ok(job);
+    assert.equal(job.metadata.annotations['argocd.argoproj.io/hook'], phase);
+    assert.equal(job.metadata.annotations['argocd.argoproj.io/sync-wave'], wave);
+    assert.equal(job.metadata.annotations['argocd.argoproj.io/hook-delete-policy'], 'BeforeHookCreation');
+    const pod = job.spec.template.spec;
+    const container = pod.containers[0];
+    assert.deepEqual(container.args, [step]);
+    assert.equal(container.env.find((env: any) => env.name === 'MODE').value, 'restore');
+    assert.deepEqual(container.env.filter((env: any) => !env.name.startsWith('SMOKE_')), restoreEnv);
+    assert.equal(pod.volumes.some((volume: any) => volume.persistentVolumeClaim), step === 'restore');
+    assert.deepEqual(container.env.filter((env: any) => env.name.startsWith('SMOKE_')), step === 'smoke' ? [
+      { name: 'SMOKE_SUBSCRIBER_ID', value: 'REPLACE_EXISTING_SMOKE_SUBSCRIBER_ID' },
+      { name: 'SMOKE_APPLICATION_IDENTIFIER', value: 'REPLACE_SMOKE_APPLICATION_IDENTIFIER' },
+      { name: 'SMOKE_API_KEY', valueFrom: { secretKeyRef: { name: 'novu-upgrade-smoke', key: 'api-key' } } },
+    ] : []);
+  }
+  console.log('PASS: disabled render equals #5; enabled hooks, waves, identity, labels, deadlines and unsafe-input guards; R1 restore/validation/failure hooks and both docs YAML');
 } finally {
   rmSync(scratch, { recursive: true, force: true });
 }
