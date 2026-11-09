@@ -125,6 +125,8 @@ upgrade:
     approved: false
   report:
     enabled: false
+  recheck:
+    enabled: false
   image: ""
   bucket: proda-staging-636c0f80-novu-upgrade
   serviceAccountName: novu-upgrade
@@ -153,7 +155,7 @@ upgrade:
     precheck: 300
     migrate: 900
     reconcile-indexes: 600
-    smoke: 180
+    smoke: 300
     failure: 300
   smoke:
     subscriberId: ""
