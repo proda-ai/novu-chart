@@ -1,3 +1,4 @@
+{{- if not (include "novu.reportOnly" .) -}}
 {{- if .Values.ingress.enabled }}
 Dashboard: https://dashboard.{{ .Values.ingress.host }}
 API: https://api.{{ .Values.ingress.host }}
@@ -5,4 +6,5 @@ Websocket: https://ws.{{ .Values.ingress.host }}
 {{- else }}
 kubectl --namespace {{ .Release.Namespace }} port-forward service/{{ include "novu.dashboard.fullname" . }} 4000:{{ .Values.dashboard.port }}
 Dashboard: http://localhost:4000
+{{- end }}
 {{- end }}

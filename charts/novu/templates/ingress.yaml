@@ -1,3 +1,4 @@
+{{- if not (include "novu.reportOnly" .) -}}
 {{- if .Values.ingress.enabled -}}
 {{- $fullName := include "novu.fullname" . -}}
 {{- $svcPortApi := .Values.api.port -}}
@@ -93,4 +94,5 @@ spec:
                 name: {{ include "novu.dashboard.fullname" . }}
                 port:
                   number: {{ $svcPortDashboard }}
+{{- end }}
 {{- end }}

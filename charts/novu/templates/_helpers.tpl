@@ -64,3 +64,7 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- define "mongodb.fullname" -}}
 {{- printf "%s-%s" (include "novu.fullname" .) "mongodb" -}}
 {{- end -}}
+
+{{- define "novu.reportOnly" -}}
+{{- if .Values.upgrade.report.enabled -}}true{{- end -}}
+{{- end -}}

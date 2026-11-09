@@ -1,29 +1,39 @@
-{{- if .Values.upgrade.enabled }}
+{{- if include "novu.reportOnly" . }}
+{{- if .Values.upgrade.enabled }}{{ fail "The report runs from a separate Application with the upgrade disarmed (upgrade.enabled=false)" }}{{- end }}
+{{- if or .Values.mongodb.enabled .Values.redis.enabled }}{{ fail "Report-only mode requires mongodb.enabled=false and redis.enabled=false" }}{{- end }}
+{{- end }}
+{{- if or .Values.upgrade.enabled .Values.upgrade.report.enabled }}
 {{- if ne .Release.Namespace "novu" }}{{ fail "Upgrade hooks are scoped to namespace novu" }}{{- end }}
 {{- if ne (include "novu.fullname" .) "novu" }}{{ fail "Upgrade hooks require release fullname novu to match L1 RBAC" }}{{- end }}
-{{- if ne .Values.upgrade.mode "upgrade" }}{{ fail "Restore uses R1's old chart plus standalone restore Jobs; never render 3.19 workloads in restore mode" }}{{- end }}
-{{- if .Values.global.env.mongodb.autoCreateIndexes }}{{ fail "Upgrade requires global.env.mongodb.autoCreateIndexes=false" }}{{- end }}
 {{- $image := required "upgrade.image requires an immutable runner digest" .Values.upgrade.image }}
 {{- if not (regexMatch "^[^[:space:]]+@sha256:[a-f0-9]{64}$" $image) }}{{ fail "upgrade.image must use @sha256" }}{{- end }}
 {{- $operation := required "upgrade.operationId is required" .Values.upgrade.operationId }}
 {{- $attempt := required "upgrade.attemptId is required" .Values.upgrade.attemptId }}
 {{- $revision := required "upgrade.syncRevision is a full reviewed Argo source SHA" .Values.upgrade.syncRevision }}
-{{- $subscriber := required "upgrade.smoke.subscriberId is required" .Values.upgrade.smoke.subscriberId }}
-{{- $application := required "upgrade.smoke.applicationIdentifier is required" .Values.upgrade.smoke.applicationIdentifier }}
-{{- $smokeSecret := required "upgrade.smoke.apiKeySecretName is required" .Values.upgrade.smoke.apiKeySecretName }}
+{{- $steps := list }}
+{{- if .Values.upgrade.enabled }}
+{{- if ne .Values.upgrade.mode "upgrade" }}{{ fail "Restore uses R1's old chart plus standalone restore Jobs; never render 3.19 workloads in restore mode" }}{{- end }}
+{{- if .Values.global.env.mongodb.autoCreateIndexes }}{{ fail "Upgrade requires global.env.mongodb.autoCreateIndexes=false" }}{{- end }}
 {{- range $key, $value := .Values.upgrade.smoke }}
 {{- if or (empty $value) (regexMatch "^(SMOKE_|REPLACE_)" $value) }}{{ fail (printf "upgrade.smoke.%s requires a resolved smoke input" $key) }}{{- end }}
 {{- end }}
-{{- $steps := list
+{{- $steps = list
   (dict "name" "quiesce" "phase" "PreSync" "wave" "-60")
   (dict "name" "backup" "phase" "PreSync" "wave" "-50")
   (dict "name" "verify" "phase" "PreSync" "wave" "-40")
+  (dict "name" "centralize" "phase" "PreSync" "wave" "-35")
   (dict "name" "precheck" "phase" "PreSync" "wave" "-30")
   (dict "name" "migrate" "phase" "PreSync" "wave" "-20")
   (dict "name" "reconcile-indexes" "phase" "PreSync" "wave" "-10")
   (dict "name" "smoke" "phase" "PostSync" "wave" "10")
   (dict "name" "failure" "phase" "SyncFail" "wave" "0") }}
+{{- end }}
+{{- if .Values.upgrade.report.enabled }}
+{{- $steps = append $steps (dict "name" "report" "step" "precheck" "mode" "report") }}
+{{- end }}
 {{- range $step := $steps }}
+{{- if or (ne $step.name "centralize") $.Values.upgrade.centralize.approved }}
+{{- $command := default $step.name $step.step }}
 ---
 apiVersion: batch/v1
 kind: Job
@@ -34,13 +44,18 @@ metadata:
     {{- include "novu.labels" $ | nindent 4 }}
     tags.datadoghq.com/env: staging
     tags.datadoghq.com/service: novu-upgrade
+  {{- if $step.phase }}
   annotations:
     argocd.argoproj.io/hook: {{ $step.phase }}
     argocd.argoproj.io/sync-wave: {{ $step.wave | quote }}
     argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+  {{- end }}
 spec:
   backoffLimit: 0
-  activeDeadlineSeconds: {{ index $.Values.upgrade.deadlines $step.name }}
+  activeDeadlineSeconds: {{ index $.Values.upgrade.deadlines $command }}
+  {{- if eq $step.name "report" }}
+  ttlSecondsAfterFinished: 86400
+  {{- end }}
   template:
     metadata:
       labels:
@@ -69,7 +84,7 @@ spec:
         - name: runner
           image: {{ $image | quote }}
           imagePullPolicy: IfNotPresent
-          args: [{{ $step.name | quote }}]
+          args: [{{ $command | quote }}]
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -91,7 +106,11 @@ spec:
             - name: STATE_CONFIGMAP
               value: {{ $.Values.upgrade.operationStateName | quote }}
             - name: MODE
-              value: upgrade
+              value: {{ default "upgrade" $step.mode }}
+            {{- if eq $step.name "centralize" }}
+            - name: CENTRALIZE_APPROVED
+              value: "true"
+            {{- end }}
             - name: WORK_DIR
               value: /work
             - name: INFOBIP_INTEGRATION_IDS_JSON
@@ -114,7 +133,7 @@ spec:
             - name: REDIS_HOST
               value: novu-redis-master
             - name: REDIS_PORT
-              value: {{ $.Values.redis.master.service.ports.redis | quote }}
+              value: {{ dig "master" "service" "ports" "redis" 6379 $.Values.redis | quote }}
             - name: REDIS_PASSWORD
               valueFrom:
                 secretKeyRef:
@@ -131,13 +150,13 @@ spec:
               value: "true"
             {{- if eq $step.name "smoke" }}
             - name: SMOKE_SUBSCRIBER_ID
-              value: {{ $subscriber | quote }}
+              value: {{ $.Values.upgrade.smoke.subscriberId | quote }}
             - name: SMOKE_APPLICATION_IDENTIFIER
-              value: {{ $application | quote }}
+              value: {{ $.Values.upgrade.smoke.applicationIdentifier | quote }}
             - name: SMOKE_API_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ $smokeSecret | quote }}
+                  name: {{ $.Values.upgrade.smoke.apiKeySecretName | quote }}
                   key: {{ $.Values.upgrade.smoke.apiKeySecretKey | quote }}
             - name: API_URL
               value: {{ printf "http://novu-api:%v%s" $.Values.api.port (printf "/%s" ($.Values.api.contextPath | trimAll "/") | trimSuffix "/") | quote }}
@@ -156,5 +175,6 @@ spec:
         - name: tmp
           emptyDir:
             sizeLimit: 128Mi
+{{- end }}
 {{- end }}
 {{- end }}
