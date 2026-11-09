@@ -669,6 +669,11 @@
       "type": "object",
       "description": "Overrides for the dashboard Ingress",
       "properties": {
+        "subdomain": {
+          "type": "string",
+          "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+          "default": "dashboard"
+        },
         "annotations": {
           "type": "object",
           "description": "Merged over ingress.annotations",
@@ -681,7 +686,7 @@
           "properties": {
             "secretName": {
               "type": "string",
-              "description": "Replaces dashboard.<ingress.tls.secretName>"
+              "description": "Replaces <ingress.dashboard.subdomain>.<ingress.tls.secretName>"
             }
           }
         }

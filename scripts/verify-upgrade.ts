@@ -28,6 +28,23 @@ try {
   assert.equal(render('charts/novu'), render(join(scratch, 'charts/novu')), 'Disabled render must equal PR #5 byte for byte');
   const enabled = ['--set', 'upgrade.enabled=true', '--set', 'global.env.mongodb.autoCreateIndexes=false', '--set-string', `upgrade.image=example.invalid/runner@sha256:${'a'.repeat(64)}`, '--set-string', 'upgrade.operationId=eu-staging-upgrade', '--set-string', 'upgrade.attemptId=rehearsal-one', '--set-string', `upgrade.syncRevision=${'b'.repeat(40)}`, '--set-string', 'upgrade.smoke.subscriberId=fixture-subscriber', '--set-string', 'upgrade.smoke.applicationIdentifier=fixture-application', '--set-string', 'upgrade.smoke.apiKeySecretName=fixture-smoke'];
   const parse = (output: string) => output.split(/^---\s*$/m).map((document) => Bun.YAML.parse(document) as any).filter(Boolean);
+  const ingressValues = ['--set', 'ingress.enabled=true', '--set', 'ingress.host=example.test', '--set', 'ingress.tls.secretName=novu-tls'];
+  for (const [subdomain, extra, secretName] of [
+    ['dashboard', [], 'dashboard.novu-tls'],
+    ['web', ['--set', 'ingress.dashboard.subdomain=web'], 'web.novu-tls'],
+    ['web', ['--set', 'ingress.dashboard.subdomain=web', '--set', 'ingress.dashboard.tls.secretName=custom-tls'], 'custom-tls'],
+  ] as const) {
+    const ingresses = parse(render('charts/novu', [...ingressValues, ...extra])).filter((item) => item.kind === 'Ingress');
+    const dashboard = ingresses.find((item) => item.metadata.name === 'novu-dashboard');
+    assert.deepEqual(dashboard.spec.rules.map((rule: any) => rule.host), [`${subdomain}.example.test`]);
+    assert.deepEqual(dashboard.spec.tls, [{ hosts: [`${subdomain}.example.test`], secretName }]);
+    const apiWs = ingresses.find((item) => item.metadata.name === 'novu');
+    assert.deepEqual(apiWs.spec.rules.map((rule: any) => rule.host), ['api.example.test', 'ws.example.test']);
+    assert.deepEqual(apiWs.spec.tls, [
+      { hosts: ['api.example.test'], secretName: 'api.novu-tls' },
+      { hosts: ['ws.example.test'], secretName: 'ws.novu-tls' },
+    ]);
+  }
   const upgradeJobs = (objects: any[]) => objects.filter((item) => item.kind === 'Job' && item.metadata.name.startsWith('novu-upgrade-'));
   const disabledJobs = upgradeJobs(parse(render('charts/novu', [...enabled, '--set', 'upgrade.centralize.approved=false', '--set', 'upgrade.report.enabled=false'])));
   assert.equal(disabledJobs.length, 8);
@@ -143,7 +160,7 @@ try {
       { name: 'SMOKE_API_KEY', valueFrom: { secretKeyRef: { name: 'novu-upgrade-smoke', key: 'api-key' } } },
     ] : []);
   }
-  console.log('PASS: disabled render equals #5; centralize/report opt-ins and standalone report; enabled hooks, waves, identity, labels, deadlines and unsafe-input guards; R1 restore/validation/failure hooks and both docs YAML');
+  console.log('PASS: dashboard subdomain defaults, web override and explicit TLS secret; API/WS ingress unchanged; disabled render equals #5; centralize/report opt-ins and standalone report; enabled hooks, waves, identity, labels, deadlines and unsafe-input guards; R1 restore/validation/failure hooks and both docs YAML');
 } finally {
   rmSync(scratch, { recursive: true, force: true });
 }

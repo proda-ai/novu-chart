@@ -50,12 +50,13 @@ The following table lists the most commonly used parameters. For the full list, 
 | `global.env.secret.jwtSecret`    | 🔑 JWT signing secret            | *required* |
 | `ingress.enabled`                | 🚪 Enable ingress                | `false`    |
 | `ingress.annotations`            | 🏷️ Annotations shared by both Ingresses | `{}` |
+| `ingress.dashboard.subdomain`     | Dashboard host and default TLS secret prefix | `dashboard` |
 | `ingress.dashboard.annotations`        | 🎯 Extra annotations for the dashboard Ingress, merged over `ingress.annotations` | `{}` |
-| `ingress.dashboard.tls.secretName`     | 🔒 TLS secret override for the dashboard host | `dashboard.<ingress.tls.secretName>` |
+| `ingress.dashboard.tls.secretName`     | 🔒 TLS secret override for the dashboard host | `<ingress.dashboard.subdomain>.<ingress.tls.secretName>` |
 
 ### 🚪 Ingress
 
-With `ingress.enabled`, the chart renders two Ingresses: `<fullname>` for `api.<host>` and `ws.<host>`, and `<fullname>-dashboard` for `dashboard.<host>`. Both get `ingress.annotations`; the dashboard one also gets `ingress.dashboard.annotations` (its keys win), so you can restrict only the dashboard by source IP while the API and websocket stay reachable from browsers:
+With `ingress.enabled`, the chart renders two Ingresses: `<fullname>` for `api.<host>` and `ws.<host>`, and `<fullname>-dashboard` for `<ingress.dashboard.subdomain>.<host>` (default `dashboard.<host>`). Set `ingress.dashboard.subdomain=web` to retain `web.<host>` and the default TLS secret `web.<ingress.tls.secretName>`; an explicit `ingress.dashboard.tls.secretName` takes precedence. Both get `ingress.annotations`; the dashboard one also gets `ingress.dashboard.annotations` (its keys win), so you can restrict only the dashboard by source IP while the API and websocket stay reachable from browsers:
 
 ```yaml
 ingress:
@@ -107,7 +108,7 @@ This chart is licensed under the **MIT License**. See [LICENSE](../../LICENSE).
 
 Chart 0.3.0 targets server 3.19.0. Follow the [migration and rollout runbook](../../docs/UPGRADE-3.19-RUNBOOK.md) before deploying; migrations and index reconciliation must finish while writers are stopped. This is a scheduled data upgrade with coordinated Mongo/Redis backup and restore rehearsal.
 
-Rename `web` values to `dashboard` and `ingress.web` to `ingress.dashboard`. The frontend image is `ghcr.io/novuhq/novu/dashboard`, port 4000; the Deployment, Service, Ingress, host prefix and default TLS secret prefix become `dashboard`. Provision DNS/TLS and carry over IP restrictions before pruning old web resources. API/WS service identities and ports remain unchanged.
+Rename `web` values to `dashboard` and `ingress.web` to `ingress.dashboard`. The frontend image is `ghcr.io/novuhq/novu/dashboard`, port 4000; the Deployment, Service and Ingress names use `dashboard`. The host and default TLS secret prefixes default to `dashboard`; set `ingress.dashboard.subdomain=web` to keep the existing address and certificate secret. Provision DNS/TLS and carry over IP restrictions before pruning old web resources. API/WS service identities and ports remain unchanged.
 
 Set `global.env.apiRootUrl` and `global.env.frontBaseUrl` (the new dashboard URL) to browser-reachable origins. `global.env.websocketUrl` defaults to empty: with ingress enabled it derives `https://ws.<ingress.host>` (HTTP without TLS); without ingress it uses `http://localhost:<ws.port>` for local access. Set an explicit browser-reachable websocket origin for other routing; explicit values take precedence. The dashboard receives only the two runtime VITE hostnames and uses its image entrypoint. REACT_APP variables, widget values, env-config.js and the pnpm startup command are removed. The image's inline configuration needs exact CSP hashes; see the runbook for generation and CORS changes.
 

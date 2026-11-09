@@ -6,6 +6,7 @@ ingress:
   tls:
     secretName: novu-tls
   dashboard:
+    subdomain: dashboard
     annotations: {}
 
 
