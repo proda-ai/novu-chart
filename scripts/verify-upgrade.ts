@@ -27,10 +27,16 @@ try {
   cpSync('charts/novu/charts', join(scratch, 'charts/novu/charts'), { recursive: true });
   assert.equal(render('charts/novu'), render(join(scratch, 'charts/novu')), 'Disabled render must equal PR #5 byte for byte');
   const enabled = ['--set', 'upgrade.enabled=true', '--set', 'global.env.mongodb.autoCreateIndexes=false', '--set-string', `upgrade.image=example.invalid/runner@sha256:${'a'.repeat(64)}`, '--set-string', 'upgrade.operationId=eu-staging-upgrade', '--set-string', 'upgrade.attemptId=rehearsal-one', '--set-string', `upgrade.syncRevision=${'b'.repeat(40)}`, '--set-string', 'upgrade.smoke.subscriberId=fixture-subscriber', '--set-string', 'upgrade.smoke.applicationIdentifier=fixture-application', '--set-string', 'upgrade.smoke.apiKeySecretName=fixture-smoke'];
-  const objects = render('charts/novu', [...enabled, '--set-string', 'global.imagePullSecrets[0]=registry-pull']).split(/^---\s*$/m).map((document) => Bun.YAML.parse(document) as any).filter(Boolean);
+  const parse = (output: string) => output.split(/^---\s*$/m).map((document) => Bun.YAML.parse(document) as any).filter(Boolean);
+  const upgradeJobs = (objects: any[]) => objects.filter((item) => item.kind === 'Job' && item.metadata.name.startsWith('novu-upgrade-'));
+  const disabledJobs = upgradeJobs(parse(render('charts/novu', [...enabled, '--set', 'upgrade.centralize.approved=false', '--set', 'upgrade.report.enabled=false'])));
+  assert.equal(disabledJobs.length, 8);
+  assert.ok(disabledJobs.every((job) => !['novu-upgrade-centralize', 'novu-upgrade-report'].includes(job.metadata.name)));
+  const both = [...enabled, '--set', 'upgrade.centralize.approved=true', '--set', 'upgrade.report.enabled=true', '--set-string', 'global.imagePullSecrets[0]=registry-pull'];
+  const objects = parse(render('charts/novu', both));
   const jobs = objects.filter((item) => item.kind === 'Job' && item.metadata.name.startsWith('novu-upgrade-'));
-  assert.equal(jobs.length, 8);
-  const expected = [['quiesce', 'PreSync', '-60'], ['backup', 'PreSync', '-50'], ['verify', 'PreSync', '-40'], ['precheck', 'PreSync', '-30'], ['migrate', 'PreSync', '-20'], ['reconcile-indexes', 'PreSync', '-10'], ['smoke', 'PostSync', '10'], ['failure', 'SyncFail', '0']];
+  assert.equal(jobs.length, 10);
+  const expected = [['quiesce', 'PreSync', '-60'], ['backup', 'PreSync', '-50'], ['verify', 'PreSync', '-40'], ['centralize', 'PreSync', '-35'], ['precheck', 'PreSync', '-30'], ['migrate', 'PreSync', '-20'], ['reconcile-indexes', 'PreSync', '-10'], ['smoke', 'PostSync', '10'], ['failure', 'SyncFail', '0']];
   for (const [step, phase, wave] of expected) {
     const job = jobs.find((item) => item.metadata.name === `novu-upgrade-${step}`);
     assert.ok(job);
@@ -51,11 +57,26 @@ try {
     }
     const container = pod.spec.containers[0];
     assert.deepEqual(container.args, [step]);
+    assert.equal(container.env.find((item: any) => item.name === 'MODE').value, 'upgrade');
+    assert.deepEqual(container.env.filter((item: any) => item.name === 'CENTRALIZE_APPROVED'), step === 'centralize' ? [{ name: 'CENTRALIZE_APPROVED', value: 'true' }] : []);
     assert.deepEqual(container.env.filter((item: any) => item.name.startsWith('SMOKE_')).map((item: any) => item.name), step === 'smoke' ? ['SMOKE_SUBSCRIBER_ID', 'SMOKE_APPLICATION_IDENTIFIER', 'SMOKE_API_KEY'] : []);
     assert.match(container.image, /@sha256:[a-f0-9]{64}$/);
     assert.ok(container.resources.requests.cpu && container.resources.requests.memory);
     assert.equal(container.env.find((item: any) => item.name === 'MONGO_AUTO_CREATE_INDEXES').value, 'false');
   }
+  const report = jobs.find((item) => item.metadata.name === 'novu-upgrade-report');
+  const precheck = jobs.find((item) => item.metadata.name === 'novu-upgrade-precheck');
+  assert.ok(report);
+  assert.equal(report.metadata.annotations, undefined);
+  assert.equal(report.spec.ttlSecondsAfterFinished, 86400);
+  assert.equal(report.spec.backoffLimit, 0);
+  assert.equal(report.spec.activeDeadlineSeconds, precheck.spec.activeDeadlineSeconds);
+  const reportPod = structuredClone(precheck.spec.template);
+  reportPod.spec.containers[0].env.find((item: any) => item.name === 'MODE').value = 'report';
+  assert.deepEqual(report.spec.template, reportPod);
+  const reportOnly = upgradeJobs(parse(render('charts/novu', [...both, '--set', 'upgrade.enabled=false', '--set', 'global.env.mongodb.autoCreateIndexes=true', '--set-string', 'upgrade.smoke.subscriberId=', '--set-string', 'upgrade.smoke.applicationIdentifier=', '--set-string', 'upgrade.smoke.apiKeySecretName='])));
+  assert.deepEqual(reportOnly, [report]);
+  assert.equal(upgradeJobs(parse(render('charts/novu', [...both, '--set', 'upgrade.enabled=false', '--set', 'upgrade.report.enabled=false']))).length, 0);
   assert.equal(objects.filter((item) => ['ServiceAccount', 'Role', 'RoleBinding', 'ConfigMap'].includes(item.kind) && ['novu-upgrade', 'novu-upgrade-state'].includes(item.metadata.name)).length, 0);
   for (const extra of [['--set', 'upgrade.mode=restore'], ['--set', 'global.env.mongodb.autoCreateIndexes=true'], ['--set-string', 'upgrade.image=runner:latest']]) {
     assert.notEqual(spawnSync('helm', ['template', 'novu', 'charts/novu', '-n', 'novu', '-f', fixture, ...enabled, ...extra]).status, 0);
@@ -101,7 +122,7 @@ try {
       { name: 'SMOKE_API_KEY', valueFrom: { secretKeyRef: { name: 'novu-upgrade-smoke', key: 'api-key' } } },
     ] : []);
   }
-  console.log('PASS: disabled render equals #5; enabled hooks, waves, identity, labels, deadlines and unsafe-input guards; R1 restore/validation/failure hooks and both docs YAML');
+  console.log('PASS: disabled render equals #5; centralize/report opt-ins and standalone report; enabled hooks, waves, identity, labels, deadlines and unsafe-input guards; R1 restore/validation/failure hooks and both docs YAML');
 } finally {
   rmSync(scratch, { recursive: true, force: true });
 }

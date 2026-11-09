@@ -439,6 +439,8 @@
       "additionalProperties": false,
       "required": [
         "enabled",
+        "centralize",
+        "report",
         "image",
         "bucket",
         "serviceAccountName",
@@ -456,6 +458,30 @@
       "properties": {
         "enabled": {
           "type": "boolean"
+        },
+        "centralize": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "approved"
+          ],
+          "properties": {
+            "approved": {
+              "type": "boolean"
+            }
+          }
+        },
+        "report": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "enabled"
+          ],
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            }
+          }
         },
         "image": {
           "type": "string",
@@ -547,6 +573,7 @@
             "quiesce",
             "backup",
             "verify",
+            "centralize",
             "precheck",
             "migrate",
             "reconcile-indexes",
@@ -565,6 +592,11 @@
               "maximum": 3600
             },
             "verify": {
+              "type": "integer",
+              "minimum": 30,
+              "maximum": 3600
+            },
+            "centralize": {
               "type": "integer",
               "minimum": 30,
               "maximum": 3600

@@ -120,6 +120,10 @@ mongodb:
 
 upgrade:
   enabled: false
+  centralize:
+    approved: false
+  report:
+    enabled: false
   image: ""
   bucket: proda-staging-636c0f80-novu-upgrade
   serviceAccountName: novu-upgrade
@@ -144,6 +148,7 @@ upgrade:
     quiesce: 300
     backup: 600
     verify: 900
+    centralize: 900
     precheck: 300
     migrate: 900
     reconcile-indexes: 600
