@@ -1,3 +1,4 @@
+{{- if not (include "novu.reportOnly" .) -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -74,3 +75,4 @@ spec:
             timeoutSeconds: 5
             failureThreshold: 3
       restartPolicy: Always
+{{- end }}
