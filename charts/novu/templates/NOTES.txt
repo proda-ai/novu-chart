@@ -1,6 +1,6 @@
 {{- if not (include "novu.reportOnly" .) -}}
 {{- if .Values.ingress.enabled }}
-Dashboard: https://dashboard.{{ .Values.ingress.host }}
+Dashboard: https://{{ .Values.ingress.dashboard.subdomain }}.{{ .Values.ingress.host }}
 API: https://api.{{ .Values.ingress.host }}
 Websocket: https://ws.{{ .Values.ingress.host }}
 {{- else }}
