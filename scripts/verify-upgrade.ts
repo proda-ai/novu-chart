@@ -105,8 +105,36 @@ try {
   const reportPod = structuredClone(precheck.spec.template);
   reportPod.spec.containers[0].env.find((item: any) => item.name === 'MODE').value = 'report';
   assert.deepEqual(report.spec.template, reportPod);
+  const disarmed = [...approved, '--set', 'upgrade.enabled=false', '--set', 'upgrade.report.enabled=false'];
+  const disarmedObjects = parse(render('charts/novu', disarmed));
+  assert.equal(disarmedObjects.filter((item) => item.kind === 'Job').length, 0);
+  const recheckValues = [...disarmed, '--set', 'upgrade.recheck.enabled=true'];
+  const recheckObjects = parse(render('charts/novu', recheckValues));
+  const recheckJobs = recheckObjects.filter((item) => item.kind === 'Job');
+  assert.equal(recheckJobs.length, 1);
+  const [recheck] = recheckJobs;
+  assert.equal(recheck.metadata.name, 'novu-upgrade-recheck');
+  assert.equal(recheck.metadata.annotations, undefined);
+  assert.equal(recheck.spec.ttlSecondsAfterFinished, 86400);
+  const smoke = jobs.find((item) => item.metadata.name === 'novu-upgrade-smoke');
+  const recheckSpec = structuredClone(smoke.spec);
+  recheckSpec.ttlSecondsAfterFinished = 86400;
+  const recheckEnv: { name: string; value?: string }[] = recheckSpec.template.spec.containers[0].env;
+  const recheckMode = recheckEnv.find((item) => item.name === 'MODE');
+  assert.ok(recheckMode);
+  recheckMode.value = 'recheck';
+  assert.deepEqual(recheck.spec, recheckSpec);
+  assert.ok(recheck.spec.activeDeadlineSeconds > 180);
+  assert.deepEqual(recheckObjects.filter((item) => item.kind !== 'Job'), disarmedObjects);
+  for (const name of ['novu-api', 'novu-dashboard', 'novu-worker', 'novu-ws']) {
+    assert.ok(recheckObjects.some((item) => item.kind === 'Deployment' && item.metadata.name === name));
+  }
+  const overlap = spawnSync('helm', ['template', 'novu', 'charts/novu', '-n', 'novu', '-f', fixture, ...recheckValues, '--set', 'upgrade.enabled=true'], { encoding: 'utf8' });
+  assert.notEqual(overlap.status, 0);
+  assert.match(overlap.stderr, /Recheck requires upgrade.enabled=false/);
   for (const [values, message] of [
     [['--set', 'upgrade.enabled=true'], /separate Application with the upgrade disarmed/],
+    [['--set', 'upgrade.recheck.enabled=true'], /Report-only mode requires upgrade.recheck.enabled=false/],
     [['--set', 'mongodb.enabled=true'], /mongodb.enabled=false and redis.enabled=false/],
     [['--set', 'redis.enabled=true'], /mongodb.enabled=false and redis.enabled=false/],
   ] as const) {
@@ -114,15 +142,16 @@ try {
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, message);
   }
-  assert.equal(upgradeJobs(parse(render('charts/novu', [...approved, '--set', 'upgrade.enabled=false', '--set', 'upgrade.report.enabled=false']))).length, 0);
   assert.equal(objects.filter((item) => ['ServiceAccount', 'Role', 'RoleBinding', 'ConfigMap'].includes(item.kind) && ['novu-upgrade', 'novu-upgrade-state'].includes(item.metadata.name)).length, 0);
-  for (const extra of [['--set', 'upgrade.mode=restore'], ['--set', 'global.env.mongodb.autoCreateIndexes=true'], ['--set-string', 'upgrade.image=runner:latest']]) {
-    assert.notEqual(spawnSync('helm', ['template', 'novu', 'charts/novu', '-n', 'novu', '-f', fixture, ...enabled, ...extra]).status, 0);
-  }
-  for (const [key, placeholder] of Object.entries({ subscriberId: 'SMOKE_SUBSCRIBER_ID', applicationIdentifier: 'SMOKE_APPLICATION_IDENTIFIER', apiKeySecretName: 'SMOKE_API_KEY_SECRET_NAME', apiKeySecretKey: 'SMOKE_API_KEY_SECRET_KEY' })) {
-    const result = spawnSync('helm', ['template', 'novu', 'charts/novu', '-n', 'novu', '-f', fixture, ...enabled, '--set-string', `upgrade.smoke.${key}=${placeholder}`], { encoding: 'utf8' });
-    assert.notEqual(result.status, 0);
-    assert.match(result.stderr, new RegExp(`upgrade.smoke.${key} requires a resolved smoke input`));
+  for (const modeValues of [enabled, recheckValues]) {
+    for (const extra of [['--set', 'upgrade.mode=restore'], ['--set', 'global.env.mongodb.autoCreateIndexes=true'], ['--set-string', 'upgrade.image=runner:latest']]) {
+      assert.notEqual(spawnSync('helm', ['template', 'novu', 'charts/novu', '-n', 'novu', '-f', fixture, ...modeValues, ...extra]).status, 0);
+    }
+    for (const [key, placeholder] of Object.entries({ subscriberId: 'SMOKE_SUBSCRIBER_ID', applicationIdentifier: 'SMOKE_APPLICATION_IDENTIFIER', apiKeySecretName: 'SMOKE_API_KEY_SECRET_NAME', apiKeySecretKey: 'SMOKE_API_KEY_SECRET_KEY' })) {
+      const result = spawnSync('helm', ['template', 'novu', 'charts/novu', '-n', 'novu', '-f', fixture, ...modeValues, '--set-string', `upgrade.smoke.${key}=${placeholder}`], { encoding: 'utf8' });
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, new RegExp(`upgrade.smoke.${key} requires a resolved smoke input`));
+    }
   }
   const restoreBlocks = [...readFileSync('docs/R1-RESTORE.md', 'utf8').matchAll(/^```yaml\n([\s\S]*?)^```/gm)].map((match) => match[1]);
   for (const path of ['docs/R1-RESTORE.md', 'docs/UPGRADE-3.19-RUNBOOK.md']) {
@@ -160,7 +189,7 @@ try {
       { name: 'SMOKE_API_KEY', valueFrom: { secretKeyRef: { name: 'novu-upgrade-smoke', key: 'api-key' } } },
     ] : []);
   }
-  console.log('PASS: dashboard subdomain defaults, web override and explicit TLS secret; API/WS ingress unchanged; disabled render equals #5; centralize/report opt-ins and standalone report; enabled hooks, waves, identity, labels, deadlines and unsafe-input guards; R1 restore/validation/failure hooks and both docs YAML');
+  console.log('PASS: dashboard subdomain defaults, web override and explicit TLS secret; API/WS ingress unchanged; disabled render equals #5; centralize/report opt-ins and standalone report; standalone recheck preserves workloads and smoke wiring, rejects armed hooks; enabled hooks, waves, identity, labels, deadlines and unsafe-input guards; R1 restore/validation/failure hooks and both docs YAML');
 } finally {
   rmSync(scratch, { recursive: true, force: true });
 }
