@@ -121,6 +121,8 @@ mongodb:
 
 upgrade:
   enabled: false
+  migratedOperationId: ""
+  freshInstall: false
   centralize:
     approved: false
   report:
@@ -162,6 +164,7 @@ upgrade:
     failure: 300
   smoke:
     minWorkflows: 7
+    noConsumersApproved: false
     subscriberId: ""
     applicationIdentifier: ""
     apiKeySecretName: ""

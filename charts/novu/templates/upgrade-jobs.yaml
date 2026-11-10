@@ -4,6 +4,10 @@
 {{- if .Values.upgrade.recheck.enabled }}{{ fail "Report-only mode requires upgrade.recheck.enabled=false" }}{{- end }}
 {{- if or .Values.mongodb.enabled .Values.redis.enabled }}{{ fail "Report-only mode requires mongodb.enabled=false and redis.enabled=false" }}{{- end }}
 {{- end }}
+{{- if and (regexMatch "^v?3\\." .Chart.AppVersion) (not (include "novu.reportOnly" .)) (not .Values.upgrade.enabled) }}
+{{- if not (or .Values.upgrade.migratedOperationId .Values.upgrade.freshInstall) }}{{ fail "Novu 3.x workloads require upgrade.enabled=true, upgrade.migratedOperationId acknowledging completed data migration, or upgrade.freshInstall=true for empty datastores" }}{{- end }}
+{{- if and .Values.upgrade.recheck.enabled (or (empty .Values.upgrade.migratedOperationId) (ne .Values.upgrade.migratedOperationId .Values.upgrade.operationId)) }}{{ fail "Recheck requires upgrade.migratedOperationId matching upgrade.operationId; containment alone does not prove completed migration" }}{{- end }}
+{{- end }}
 {{- if or .Values.upgrade.enabled .Values.upgrade.report.enabled .Values.upgrade.recheck.enabled }}
 {{- if ne .Release.Namespace "novu" }}{{ fail "Upgrade hooks are scoped to namespace novu" }}{{- end }}
 {{- if ne (include "novu.fullname" .) "novu" }}{{ fail "Upgrade hooks require release fullname novu to match L1 RBAC" }}{{- end }}
