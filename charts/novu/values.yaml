@@ -130,7 +130,8 @@ upgrade:
     previousApiKeySecretName: ""
     previousApiKeySecretKey: api-key
   image: ""
-  bucket: proda-staging-636c0f80-novu-upgrade
+  deployEnv: ""
+  bucket: ""
   serviceAccountName: novu-upgrade
   operationStateName: novu-upgrade-state
   operationId: ""
@@ -160,6 +161,7 @@ upgrade:
     smoke: 300
     failure: 300
   smoke:
+    minWorkflows: 7
     subscriberId: ""
     applicationIdentifier: ""
     apiKeySecretName: ""

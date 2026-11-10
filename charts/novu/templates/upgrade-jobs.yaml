@@ -12,8 +12,11 @@
 {{- $operation := required "upgrade.operationId is required" .Values.upgrade.operationId }}
 {{- $attempt := required "upgrade.attemptId is required" .Values.upgrade.attemptId }}
 {{- $revision := required "upgrade.syncRevision is a full reviewed Argo source SHA" .Values.upgrade.syncRevision }}
+{{- $deployEnv := required "upgrade.deployEnv is required" .Values.upgrade.deployEnv }}
+{{- $bucket := required "upgrade.bucket is required" .Values.upgrade.bucket }}
 {{- $steps := list }}
-{{- range $key, $value := .Values.upgrade.smoke }}
+{{- range $key := list "subscriberId" "applicationIdentifier" "apiKeySecretName" "apiKeySecretKey" }}
+{{- $value := index $.Values.upgrade.smoke $key }}
 {{- if or (empty $value) (regexMatch "^(SMOKE_|REPLACE_)" $value) }}{{ fail (printf "upgrade.smoke.%s requires a resolved smoke input" $key) }}{{- end }}
 {{- end }}
 {{- with .Values.upgrade.recheck.previousApiKeySecretName }}
@@ -56,7 +59,7 @@ metadata:
   namespace: {{ $.Release.Namespace }}
   labels:
     {{- include "novu.labels" $ | nindent 4 }}
-    tags.datadoghq.com/env: staging
+    tags.datadoghq.com/env: {{ $deployEnv | quote }}
     tags.datadoghq.com/service: novu-upgrade
   {{- if $step.phase }}
   annotations:
@@ -73,7 +76,7 @@ spec:
   template:
     metadata:
       labels:
-        tags.datadoghq.com/env: staging
+        tags.datadoghq.com/env: {{ $deployEnv | quote }}
         tags.datadoghq.com/service: novu-upgrade
       annotations:
         ad.datadoghq.com/runner.logs: '[{"source":"nodejs","service":"novu-upgrade"}]'
@@ -115,8 +118,12 @@ spec:
               value: {{ $revision | quote }}
             - name: RUNNER_IMAGE
               value: {{ $image | quote }}
+            - name: DEPLOY_ENV
+              value: {{ $deployEnv | quote }}
+            - name: MIN_WORKFLOWS
+              value: {{ $.Values.upgrade.smoke.minWorkflows | int64 | quote }}
             - name: BACKUP_BUCKET
-              value: {{ $.Values.upgrade.bucket | quote }}
+              value: {{ $bucket | quote }}
             - name: STATE_CONFIGMAP
               value: {{ $.Values.upgrade.operationStateName | quote }}
             - name: MODE

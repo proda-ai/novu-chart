@@ -454,7 +454,8 @@
         "smoke",
         "workVolumeSize",
         "indexDrops",
-        "recheck"
+        "recheck",
+        "deployEnv"
       ],
       "properties": {
         "enabled": {
@@ -509,7 +510,9 @@
           "pattern": "^$|^\\S+@sha256:[a-f0-9]{64}$"
         },
         "bucket": {
-          "const": "proda-staging-636c0f80-novu-upgrade"
+          "type": "string",
+          "pattern": "^$|^[a-z0-9][a-z0-9-]*-novu-upgrade$",
+          "maxLength": 63
         },
         "serviceAccountName": {
           "const": "novu-upgrade"
@@ -656,7 +659,8 @@
             "subscriberId",
             "applicationIdentifier",
             "apiKeySecretName",
-            "apiKeySecretKey"
+            "apiKeySecretKey",
+            "minWorkflows"
           ],
           "properties": {
             "subscriberId": {
@@ -670,6 +674,11 @@
             },
             "apiKeySecretKey": {
               "type": "string"
+            },
+            "minWorkflows": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
             }
           }
         },
@@ -680,8 +689,118 @@
             "type": "string",
             "pattern": "^[a-f0-9]{24}$"
           }
+        },
+        "deployEnv": {
+          "type": "string",
+          "enum": [
+            "",
+            "staging",
+            "production",
+            "us-production"
+          ]
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "anyOf": [
+              {
+                "properties": {
+                  "enabled": {
+                    "const": true
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "report": {
+                    "properties": {
+                      "enabled": {
+                        "const": true
+                      }
+                    }
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "recheck": {
+                    "properties": {
+                      "enabled": {
+                        "const": true
+                      }
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "then": {
+            "properties": {
+              "bucket": {
+                "minLength": 1
+              },
+              "deployEnv": {
+                "minLength": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "deployEnv": {
+                "const": "staging"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "bucket": {
+                "enum": [
+                  "proda-staging-636c0f80-novu-upgrade"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "deployEnv": {
+                "const": "production"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "bucket": {
+                "enum": [
+                  "proda-production-1d97bb62-novu-upgrade"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "deployEnv": {
+                "const": "us-production"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "bucket": {
+                "enum": [
+                  "proda-production-us-novu-upgrade"
+                ]
+              }
+            }
+          }
+        }
+      ]
     }
   },
   "additionalProperties": false,

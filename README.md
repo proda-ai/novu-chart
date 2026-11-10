@@ -113,3 +113,5 @@ essential to making Novu the best open-source notification management solution.
 
 [![Contributors](https://contrib.rocks/image?repo=nova-edge/novu-chart)](https://github.com/nova-edge/novu-chart/graphs/contributors)
 
+
+Upgrade Jobs require explicit `upgrade.deployEnv` (`staging`, `production`, `us-production`) and its matching `upgrade.bucket`; both default empty while hooks are disarmed. See the [regional inputs and recovery policy](docs/UPGRADE-3.19-RUNBOOK.md#inputs-and-activation). `upgrade.smoke.minWorkflows` defaults to 7; explicit zero waives only the active workflow count after regional consumer review. Prepare [R1 with actual regional PVCs and baseline pins](docs/R1-RESTORE.md) before activation.

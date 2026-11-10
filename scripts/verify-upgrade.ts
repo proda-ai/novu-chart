@@ -27,7 +27,7 @@ try {
   assert.equal(unpack.status, 0);
   cpSync('charts/novu/charts', join(scratch, 'charts/novu/charts'), { recursive: true });
   assert.equal(render('charts/novu'), render(join(scratch, 'charts/novu')), 'Disabled render must equal PR #5 byte for byte');
-  const enabled = ['--set', 'upgrade.enabled=true', '--set', 'global.env.mongodb.autoCreateIndexes=false', '--set-string', `upgrade.image=example.invalid/runner@sha256:${'a'.repeat(64)}`, '--set-string', 'upgrade.operationId=eu-staging-upgrade', '--set-string', 'upgrade.attemptId=rehearsal-one', '--set-string', `upgrade.syncRevision=${'b'.repeat(40)}`, '--set-string', 'upgrade.smoke.subscriberId=fixture-subscriber', '--set-string', 'upgrade.smoke.applicationIdentifier=fixture-application', '--set-string', 'upgrade.smoke.apiKeySecretName=fixture-smoke'];
+  const enabled = ['--set-string', 'upgrade.deployEnv=staging', '--set-string', 'upgrade.bucket=proda-staging-636c0f80-novu-upgrade', '--set', 'upgrade.enabled=true', '--set', 'global.env.mongodb.autoCreateIndexes=false', '--set-string', `upgrade.image=example.invalid/runner@sha256:${'a'.repeat(64)}`, '--set-string', 'upgrade.operationId=eu-staging-upgrade', '--set-string', 'upgrade.attemptId=rehearsal-one', '--set-string', `upgrade.syncRevision=${'b'.repeat(40)}`, '--set-string', 'upgrade.smoke.subscriberId=fixture-subscriber', '--set-string', 'upgrade.smoke.applicationIdentifier=fixture-application', '--set-string', 'upgrade.smoke.apiKeySecretName=fixture-smoke'];
   const parse = (output: string) => output.split(/^---\s*$/m).map((document) => Bun.YAML.parse(document) as any).filter(Boolean);
   const ingressValues = ['--set', 'ingress.enabled=true', '--set', 'ingress.host=example.test', '--set', 'ingress.tls.secretName=novu-tls'];
   for (const [subdomain, extra, secretName] of [
@@ -47,6 +47,55 @@ try {
     ]);
   }
   const upgradeJobs = (objects: any[]) => objects.filter((item) => item.kind === 'Job' && item.metadata.name.startsWith('novu-upgrade-'));
+  for (const minimum of [0, 7, 1000000, Number.MAX_SAFE_INTEGER]) {
+    const valuesObject = { upgrade: { smoke: { minWorkflows: minimum } } };
+    for (const [format, contents] of [
+      ['yaml', `upgrade:\n  smoke:\n    minWorkflows: ${minimum}\n`],
+      ['json', JSON.stringify(valuesObject)],
+    ]) {
+      const valuesFile = join(scratch, `minimum.${format}`);
+      writeFileSync(valuesFile, contents);
+      const rendered = upgradeJobs(parse(render('charts/novu', [...enabled, '-f', valuesFile])));
+      assert.ok(rendered.length);
+      for (const job of rendered) {
+        const env: EnvVar[] = job.spec.template.spec.containers[0].env;
+        assert.equal(env.find((item) => item.name === 'MIN_WORKFLOWS')?.value, String(minimum), `${format}: ${minimum}`);
+      }
+    }
+  }
+  for (const [deployEnv, bucket] of [
+    ['staging', 'proda-staging-636c0f80-novu-upgrade'],
+    ['production', 'proda-production-1d97bb62-novu-upgrade'],
+    ['us-production', 'proda-production-us-novu-upgrade'],
+  ]) {
+    for (const mode of ['upgrade', 'report', 'recheck']) {
+      const values = [...enabled, '--set-string', `upgrade.deployEnv=${deployEnv}`, '--set-string', `upgrade.bucket=${bucket}`, '--set', 'upgrade.smoke.minWorkflows=0',
+        ...(mode === 'upgrade' ? [] : ['--set', 'upgrade.enabled=false', '--set', `upgrade.${mode}.enabled=true`]),
+        ...(mode === 'report' ? ['--set', 'mongodb.enabled=false', '--set', 'redis.enabled=false'] : [])];
+      const regional = upgradeJobs(parse(render('charts/novu', values)));
+      assert.ok(regional.length);
+      for (const job of regional) {
+        for (const metadata of [job.metadata, job.spec.template.metadata]) assert.equal(metadata.labels['tags.datadoghq.com/env'], deployEnv);
+        const env: EnvVar[] = job.spec.template.spec.containers[0].env;
+        assert.equal(env.find((item) => item.name === 'DEPLOY_ENV')?.value, deployEnv);
+        assert.equal(env.find((item) => item.name === 'BACKUP_BUCKET')?.value, bucket);
+        assert.equal(env.find((item) => item.name === 'MIN_WORKFLOWS')?.value, '0');
+      }
+      for (const invalid of [
+        ['--set-string', 'upgrade.deployEnv='], ['--set', 'upgrade.deployEnv=null'],
+        ['--set-string', 'upgrade.deployEnv=unknown'], ['--set-string', 'upgrade.bucket='],
+        ['--set', 'upgrade.bucket=null'], ['--set-string', 'upgrade.bucket=invalid_bucket'],
+        ['--set-string', `upgrade.bucket=${deployEnv === 'staging' ? 'proda-production-us-novu-upgrade' : 'proda-staging-636c0f80-novu-upgrade'}`],
+        ['--set', 'upgrade.smoke.minWorkflows=-1'], ['--set', 'upgrade.smoke.minWorkflows=1.5'],
+        ['--set-string', 'upgrade.smoke.minWorkflows=0'], ['--set', 'upgrade.smoke.minWorkflows=null'],
+      ]) {
+        const key = invalid[1].split('=')[0];
+        const overrides = values.filter((value, index) => !value.startsWith(`${key}=`) && !(value.startsWith('--set') && values[index + 1]?.startsWith(`${key}=`)));
+        const rejected = spawnSync('helm', ['template', 'novu', 'charts/novu', '-n', 'novu', '-f', fixture, ...overrides, ...invalid], { encoding: 'utf8' });
+        assert.notEqual(rejected.status, 0, `${mode}/${deployEnv}: ${invalid.join(' ')}`);
+      }
+    }
+  }
   const disabledJobs = upgradeJobs(parse(render('charts/novu', [...enabled, '--set', 'upgrade.centralize.approved=false', '--set', 'upgrade.report.enabled=false'])));
   assert.equal(disabledJobs.length, 8);
   assert.ok(disabledJobs.every((job) => !['novu-upgrade-centralize', 'novu-upgrade-report'].includes(job.metadata.name)));
@@ -54,6 +103,20 @@ try {
   const objects = parse(render('charts/novu', approved));
   const jobs = objects.filter((item) => item.kind === 'Job' && item.metadata.name.startsWith('novu-upgrade-'));
   assert.equal(jobs.length, 9);
+  const base = join(scratch, 'smoke-first');
+  const baseArchive = spawnSync('git', ['archive', '8d0e395c514bcd089b58ef785b8cae0bc7263a6e', 'charts/novu'], { maxBuffer: 20 * 1024 * 1024 });
+  assert.equal(baseArchive.status, 0);
+  run('mkdir', ['-p', base]);
+  assert.equal(spawnSync('tar', ['-x', '-C', base], { input: baseArchive.stdout }).status, 0);
+  cpSync('charts/novu/charts', join(base, 'charts/novu/charts'), { recursive: true });
+  const baseValues = approved.filter((value, index) => !value.startsWith('upgrade.deployEnv=') && !(value === '--set-string' && approved[index + 1]?.startsWith('upgrade.deployEnv=')));
+  const baselineJobs = upgradeJobs(parse(render(join(base, 'charts/novu'), baseValues)));
+  const compatibleJobs = structuredClone(jobs);
+  for (const job of compatibleJobs) {
+    const env: EnvVar[] = job.spec.template.spec.containers[0].env;
+    job.spec.template.spec.containers[0].env = env.filter((item) => !['DEPLOY_ENV', 'MIN_WORKFLOWS'].includes(item.name));
+  }
+  assert.deepEqual(compatibleJobs, baselineJobs, 'Staging Jobs preserve smoke-first rendering apart from explicit regional/minimum inputs');
   const expected = [['quiesce', 'PreSync', '-60'], ['backup', 'PreSync', '-50'], ['verify', 'PreSync', '-40'], ['centralize', 'PreSync', '-35'], ['precheck', 'PreSync', '-30'], ['migrate', 'PreSync', '-20'], ['reconcile-indexes', 'PreSync', '-10'], ['smoke', 'PostSync', '10'], ['failure', 'SyncFail', '0']];
   for (const [step, phase, wave] of expected) {
     const job = jobs.find((item) => item.metadata.name === `novu-upgrade-${step}`);
@@ -75,6 +138,7 @@ try {
     }
     const container = pod.spec.containers[0];
     assert.deepEqual(container.args, [step]);
+    assert.equal(container.env.find((item: EnvVar) => item.name === 'MIN_WORKFLOWS')?.value, '7');
     assert.equal(container.env.find((item: any) => item.name === 'MODE').value, 'upgrade');
     assert.deepEqual(container.env.filter((item: any) => item.name === 'CENTRALIZE_APPROVED'), step === 'centralize' ? [{ name: 'CENTRALIZE_APPROVED', value: 'true' }] : []);
     assert.deepEqual(container.env.filter((item: EnvVar) => item.name.startsWith('SMOKE_')).map((item: EnvVar) => item.name), ['quiesce', 'smoke'].includes(step) ? ['SMOKE_SUBSCRIBER_ID', 'SMOKE_APPLICATION_IDENTIFIER', 'SMOKE_API_KEY'] : []);
@@ -196,6 +260,26 @@ try {
     }
     assert.equal(job.spec.template.spec.containers[0].env.find((env: any) => env.name === 'BACKUP_GENERATION').value, '1730995200123456');
   }
+  for (const [deployEnv, bucket] of [
+    ['staging', 'proda-staging-636c0f80-novu-upgrade'],
+    ['production', 'proda-production-1d97bb62-novu-upgrade'],
+    ['us-production', 'proda-production-us-novu-upgrade'],
+  ]) {
+    const resolved = parse(restoreYaml.replaceAll('REPLACE_DEPLOY_ENV', deployEnv)
+      .replaceAll('REPLACE_BACKUP_BUCKET', bucket).replaceAll('REPLACE_MONGO_PVC', `${deployEnv}-mongo-claim`)
+      .replaceAll('REPLACE_REDIS_PVC', `${deployEnv}-redis-claim`));
+    for (const job of resolved) {
+      for (const metadata of [job.metadata, job.spec.template.metadata]) assert.equal(metadata.labels['tags.datadoghq.com/env'], deployEnv);
+      const env: EnvVar[] = job.spec.template.spec.containers[0].env;
+      assert.equal(env.find((item) => item.name === 'DEPLOY_ENV')?.value, deployEnv);
+      assert.equal(env.find((item) => item.name === 'BACKUP_BUCKET')?.value, bucket);
+      assert.equal(env.find((item) => item.name === 'MIN_WORKFLOWS')?.value, '7');
+      if (job.spec.template.spec.containers[0].args[0] === 'restore') {
+        const volumes: { persistentVolumeClaim?: { claimName: string } }[] = job.spec.template.spec.volumes;
+        assert.deepEqual(volumes.flatMap((volume) => volume.persistentVolumeClaim ? [volume.persistentVolumeClaim.claimName] : []), [`${deployEnv}-mongo-claim`, `${deployEnv}-redis-claim`]);
+      }
+    }
+  }
   const restoreExpected = [['quiesce', 'PreSync', '-60'], ['restore', 'PreSync', '-50'], ['smoke', 'PostSync', '10'], ['failure', 'SyncFail', '0']];
   const restoreEnv = restoreJobs[0].spec.template.spec.containers[0].env;
   for (const [step, phase, wave] of restoreExpected) {
@@ -216,7 +300,7 @@ try {
       { name: 'SMOKE_API_KEY', valueFrom: { secretKeyRef: { name: 'novu-upgrade-smoke', key: 'api-key' } } },
     ] : []);
   }
-  console.log('PASS: dashboard subdomain defaults, web override and explicit TLS secret; API/WS ingress unchanged; disabled render equals #5; centralize/report opt-ins and standalone report with smoke credentials; quiesce carries the smoke credentials; standalone recheck preserves workloads and smoke wiring, optional previous smoke key, rejects armed hooks; enabled hooks, waves, identity, labels, deadlines and unsafe-input guards; R1 restore/validation/failure hooks and both docs YAML');
+  console.log('PASS: regional environment/bucket guards, labels and workflow minimum; staging Jobs equal smoke-first apart from explicit inputs; dashboard subdomain defaults, web override and explicit TLS secret; API/WS ingress unchanged; disabled render equals #5; centralize/report opt-ins and standalone report with smoke credentials; quiesce carries the smoke credentials; standalone recheck preserves workloads and smoke wiring, optional previous smoke key, rejects armed hooks; enabled hooks, waves, identity, labels, deadlines and unsafe-input guards; R1 restore/validation/failure hooks and both docs YAML');
 } finally {
   rmSync(scratch, { recursive: true, force: true });
 }
