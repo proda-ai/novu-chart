@@ -119,7 +119,10 @@ try {
   const smoke = jobs.find((item) => item.metadata.name === 'novu-upgrade-smoke');
   const recheckSpec = structuredClone(smoke.spec);
   recheckSpec.ttlSecondsAfterFinished = 86400;
-  recheckSpec.template.spec.containers[0].env.find((item: any) => item.name === 'MODE').value = 'recheck';
+  const recheckEnv: { name: string; value?: string }[] = recheckSpec.template.spec.containers[0].env;
+  const recheckMode = recheckEnv.find((item) => item.name === 'MODE');
+  assert.ok(recheckMode);
+  recheckMode.value = 'recheck';
   assert.deepEqual(recheck.spec, recheckSpec);
   assert.ok(recheck.spec.activeDeadlineSeconds > 180);
   assert.deepEqual(recheckObjects.filter((item) => item.kind !== 'Job'), disarmedObjects);
