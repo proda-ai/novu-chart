@@ -488,11 +488,19 @@
           "type": "object",
           "additionalProperties": false,
           "required": [
-            "enabled"
+            "enabled",
+            "previousApiKeySecretName",
+            "previousApiKeySecretKey"
           ],
           "properties": {
             "enabled": {
               "type": "boolean"
+            },
+            "previousApiKeySecretName": {
+              "type": "string"
+            },
+            "previousApiKeySecretKey": {
+              "type": "string"
             }
           }
         },

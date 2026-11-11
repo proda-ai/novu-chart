@@ -13,12 +13,19 @@
 {{- $attempt := required "upgrade.attemptId is required" .Values.upgrade.attemptId }}
 {{- $revision := required "upgrade.syncRevision is a full reviewed Argo source SHA" .Values.upgrade.syncRevision }}
 {{- $steps := list }}
-{{- if or .Values.upgrade.enabled .Values.upgrade.recheck.enabled }}
-{{- if ne .Values.upgrade.mode "upgrade" }}{{ fail "Restore uses R1's old chart plus standalone restore Jobs; never render 3.19 workloads in restore mode" }}{{- end }}
-{{- if .Values.global.env.mongodb.autoCreateIndexes }}{{ fail "Upgrade requires global.env.mongodb.autoCreateIndexes=false" }}{{- end }}
 {{- range $key, $value := .Values.upgrade.smoke }}
 {{- if or (empty $value) (regexMatch "^(SMOKE_|REPLACE_)" $value) }}{{ fail (printf "upgrade.smoke.%s requires a resolved smoke input" $key) }}{{- end }}
 {{- end }}
+{{- with .Values.upgrade.recheck.previousApiKeySecretName }}
+{{- if not $.Values.upgrade.recheck.enabled }}{{ fail "upgrade.recheck.previousApiKeySecretName applies only to upgrade.recheck.enabled=true" }}{{- end }}
+{{- range $key := list "previousApiKeySecretName" "previousApiKeySecretKey" }}
+{{- $value := index $.Values.upgrade.recheck $key }}
+{{- if or (empty $value) (regexMatch "^(SMOKE_|REPLACE_)" $value) }}{{ fail (printf "upgrade.recheck.%s requires a resolved smoke input" $key) }}{{- end }}
+{{- end }}
+{{- end }}
+{{- if or .Values.upgrade.enabled .Values.upgrade.recheck.enabled }}
+{{- if ne .Values.upgrade.mode "upgrade" }}{{ fail "Restore uses R1's old chart plus standalone restore Jobs; never render 3.19 workloads in restore mode" }}{{- end }}
+{{- if .Values.global.env.mongodb.autoCreateIndexes }}{{ fail "Upgrade requires global.env.mongodb.autoCreateIndexes=false" }}{{- end }}
 {{- end }}
 {{- if .Values.upgrade.enabled }}
 {{- $steps = list
@@ -155,7 +162,7 @@ spec:
               value: "false"
             - name: MIGRATION
               value: "true"
-            {{- if eq $command "smoke" }}
+            {{- if has $step.name (list "quiesce" "report" "smoke" "recheck") }}
             - name: SMOKE_SUBSCRIBER_ID
               value: {{ $.Values.upgrade.smoke.subscriberId | quote }}
             - name: SMOKE_APPLICATION_IDENTIFIER
@@ -169,6 +176,13 @@ spec:
               value: {{ printf "http://novu-api:%v%s" $.Values.api.port (printf "/%s" ($.Values.api.contextPath | trimAll "/") | trimSuffix "/") | quote }}
             - name: WS_URL
               value: {{ printf "http://novu-ws:%v%s" $.Values.ws.port (printf "/%s" ($.Values.ws.contextPath | trimAll "/") | trimSuffix "/") | quote }}
+            {{- end }}
+            {{- if and (eq $step.name "recheck") $.Values.upgrade.recheck.previousApiKeySecretName }}
+            - name: SMOKE_PREVIOUS_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.upgrade.recheck.previousApiKeySecretName | quote }}
+                  key: {{ $.Values.upgrade.recheck.previousApiKeySecretKey | quote }}
             {{- end }}
           volumeMounts:
             - name: work

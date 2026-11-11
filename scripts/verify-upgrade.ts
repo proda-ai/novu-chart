@@ -4,6 +4,7 @@ import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:f
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+type EnvVar = { name: string; value?: string; valueFrom?: { secretKeyRef?: { name: string; key: string } } };
 const run = (program: string, args: string[]) => {
   const result = spawnSync(program, args, { encoding: 'utf8', maxBuffer: 20 * 1024 * 1024 });
   assert.equal(result.status, 0, result.stderr);
@@ -76,12 +77,19 @@ try {
     assert.deepEqual(container.args, [step]);
     assert.equal(container.env.find((item: any) => item.name === 'MODE').value, 'upgrade');
     assert.deepEqual(container.env.filter((item: any) => item.name === 'CENTRALIZE_APPROVED'), step === 'centralize' ? [{ name: 'CENTRALIZE_APPROVED', value: 'true' }] : []);
-    assert.deepEqual(container.env.filter((item: any) => item.name.startsWith('SMOKE_')).map((item: any) => item.name), step === 'smoke' ? ['SMOKE_SUBSCRIBER_ID', 'SMOKE_APPLICATION_IDENTIFIER', 'SMOKE_API_KEY'] : []);
+    assert.deepEqual(container.env.filter((item: EnvVar) => item.name.startsWith('SMOKE_')).map((item: EnvVar) => item.name), ['quiesce', 'smoke'].includes(step) ? ['SMOKE_SUBSCRIBER_ID', 'SMOKE_APPLICATION_IDENTIFIER', 'SMOKE_API_KEY'] : []);
+    assert.equal(container.env.some((item: EnvVar) => ['API_URL', 'WS_URL'].includes(item.name)), ['quiesce', 'smoke'].includes(step));
+    assert.equal(container.env.some((item: EnvVar) => item.name === 'SMOKE_PREVIOUS_API_KEY'), false);
     assert.match(container.image, /@sha256:[a-f0-9]{64}$/);
     assert.ok(container.resources.requests.cpu && container.resources.requests.memory);
     assert.equal(container.env.find((item: any) => item.name === 'MONGO_AUTO_CREATE_INDEXES').value, 'false');
   }
-  const reportValues = [...approved, '--set', 'upgrade.enabled=false', '--set', 'upgrade.report.enabled=true', '--set', 'mongodb.enabled=false', '--set', 'redis.enabled=false', '--set', 'global.env.mongodb.autoCreateIndexes=true', '--set-string', 'upgrade.smoke.subscriberId=', '--set-string', 'upgrade.smoke.applicationIdentifier=', '--set-string', 'upgrade.smoke.apiKeySecretName='];
+  const smokeEnv = (job: { spec: { template: { spec: { containers: { env: EnvVar[] }[] } } } }) => job.spec.template.spec.containers[0].env.filter((item) => item.name.startsWith('SMOKE_') || ['API_URL', 'WS_URL'].includes(item.name));
+  const quiesce = jobs.find((item) => item.metadata.name === 'novu-upgrade-quiesce');
+  assert.deepEqual(smokeEnv(quiesce), smokeEnv(jobs.find((item) => item.metadata.name === 'novu-upgrade-smoke')));
+  assert.deepEqual(smokeEnv(quiesce).find((item) => item.name === 'SMOKE_API_KEY')?.valueFrom?.secretKeyRef, { name: 'fixture-smoke', key: 'api-key' });
+  assert.deepEqual(smokeEnv(quiesce).find((item) => item.name === 'API_URL')?.value, 'http://novu-api:3000');
+  const reportValues = [...approved, '--set', 'upgrade.enabled=false', '--set', 'upgrade.report.enabled=true', '--set', 'mongodb.enabled=false', '--set', 'redis.enabled=false', '--set', 'global.env.mongodb.autoCreateIndexes=true'];
   const reportOnly = parse(render('charts/novu', reportValues));
   assert.equal(reportOnly.length, 1);
   const [report] = reportOnly;
@@ -94,7 +102,9 @@ try {
     { name: 'novu-mongodb-svcbind-root', key: 'uri' },
     { name: 'novu-redis', key: 'redis-password' },
     { name: 'novu-secret', key: 'STORE_ENCRYPTION_KEY' },
+    { name: 'fixture-smoke', key: 'api-key' },
   ]);
+  assert.deepEqual(smokeEnv(report), smokeEnv(quiesce));
   assert.equal(report.spec.template.spec.containers[0].env.find((item: any) => item.name === 'MODE').value, 'report');
   const precheck = jobs.find((item) => item.metadata.name === 'novu-upgrade-precheck');
   assert.ok(report);
@@ -102,7 +112,8 @@ try {
   assert.equal(report.spec.ttlSecondsAfterFinished, 86400);
   assert.equal(report.spec.backoffLimit, 0);
   assert.equal(report.spec.activeDeadlineSeconds, precheck.spec.activeDeadlineSeconds);
-  const reportPod = structuredClone(precheck.spec.template);
+  const reportPod = structuredClone(quiesce.spec.template);
+  reportPod.spec.containers[0].args = ['precheck'];
   reportPod.spec.containers[0].env.find((item: any) => item.name === 'MODE').value = 'report';
   assert.deepEqual(report.spec.template, reportPod);
   const disarmed = [...approved, '--set', 'upgrade.enabled=false', '--set', 'upgrade.report.enabled=false'];
@@ -125,6 +136,20 @@ try {
   recheckMode.value = 'recheck';
   assert.deepEqual(recheck.spec, recheckSpec);
   assert.ok(recheck.spec.activeDeadlineSeconds > 180);
+  const previousKey = ['--set-string', 'upgrade.recheck.previousApiKeySecretName=fixture-previous-smoke'];
+  const [correction] = parse(render('charts/novu', [...recheckValues, ...previousKey])).filter((item) => item.kind === 'Job');
+  const correctionSpec = structuredClone(recheckSpec);
+  correctionSpec.template.spec.containers[0].env.push({ name: 'SMOKE_PREVIOUS_API_KEY', valueFrom: { secretKeyRef: { name: 'fixture-previous-smoke', key: 'api-key' } } });
+  assert.deepEqual(correction.spec, correctionSpec);
+  for (const [values, message] of [
+    [[...approved, ...previousKey], /previousApiKeySecretName applies only to upgrade.recheck.enabled=true/],
+    [[...recheckValues, '--set-string', 'upgrade.recheck.previousApiKeySecretName=REPLACE_PREVIOUS_SMOKE_SECRET'], /upgrade.recheck.previousApiKeySecretName requires a resolved smoke input/],
+    [[...recheckValues, ...previousKey, '--set-string', 'upgrade.recheck.previousApiKeySecretKey='], /upgrade.recheck.previousApiKeySecretKey requires a resolved smoke input/],
+  ] as const) {
+    const result = spawnSync('helm', ['template', 'novu', 'charts/novu', '-n', 'novu', '-f', fixture, ...values], { encoding: 'utf8' });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, message);
+  }
   assert.deepEqual(recheckObjects.filter((item) => item.kind !== 'Job'), disarmedObjects);
   for (const name of ['novu-api', 'novu-dashboard', 'novu-worker', 'novu-ws']) {
     assert.ok(recheckObjects.some((item) => item.kind === 'Deployment' && item.metadata.name === name));
@@ -147,6 +172,8 @@ try {
     for (const extra of [['--set', 'upgrade.mode=restore'], ['--set', 'global.env.mongodb.autoCreateIndexes=true'], ['--set-string', 'upgrade.image=runner:latest']]) {
       assert.notEqual(spawnSync('helm', ['template', 'novu', 'charts/novu', '-n', 'novu', '-f', fixture, ...modeValues, ...extra]).status, 0);
     }
+  }
+  for (const modeValues of [enabled, recheckValues, reportValues]) {
     for (const [key, placeholder] of Object.entries({ subscriberId: 'SMOKE_SUBSCRIBER_ID', applicationIdentifier: 'SMOKE_APPLICATION_IDENTIFIER', apiKeySecretName: 'SMOKE_API_KEY_SECRET_NAME', apiKeySecretKey: 'SMOKE_API_KEY_SECRET_KEY' })) {
       const result = spawnSync('helm', ['template', 'novu', 'charts/novu', '-n', 'novu', '-f', fixture, ...modeValues, '--set-string', `upgrade.smoke.${key}=${placeholder}`], { encoding: 'utf8' });
       assert.notEqual(result.status, 0);
@@ -189,7 +216,7 @@ try {
       { name: 'SMOKE_API_KEY', valueFrom: { secretKeyRef: { name: 'novu-upgrade-smoke', key: 'api-key' } } },
     ] : []);
   }
-  console.log('PASS: dashboard subdomain defaults, web override and explicit TLS secret; API/WS ingress unchanged; disabled render equals #5; centralize/report opt-ins and standalone report; standalone recheck preserves workloads and smoke wiring, rejects armed hooks; enabled hooks, waves, identity, labels, deadlines and unsafe-input guards; R1 restore/validation/failure hooks and both docs YAML');
+  console.log('PASS: dashboard subdomain defaults, web override and explicit TLS secret; API/WS ingress unchanged; disabled render equals #5; centralize/report opt-ins and standalone report with smoke credentials; quiesce carries the smoke credentials; standalone recheck preserves workloads and smoke wiring, optional previous smoke key, rejects armed hooks; enabled hooks, waves, identity, labels, deadlines and unsafe-input guards; R1 restore/validation/failure hooks and both docs YAML');
 } finally {
   rmSync(scratch, { recursive: true, force: true });
 }
