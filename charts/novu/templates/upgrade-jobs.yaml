@@ -4,6 +4,10 @@
 {{- if .Values.upgrade.recheck.enabled }}{{ fail "Report-only mode requires upgrade.recheck.enabled=false" }}{{- end }}
 {{- if or .Values.mongodb.enabled .Values.redis.enabled }}{{ fail "Report-only mode requires mongodb.enabled=false and redis.enabled=false" }}{{- end }}
 {{- end }}
+{{- if and (regexMatch "^v?3\\." .Chart.AppVersion) (not (include "novu.reportOnly" .)) (not .Values.upgrade.enabled) }}
+{{- if not (or .Values.upgrade.migratedOperationId .Values.upgrade.freshInstall) }}{{ fail "Novu 3.x workloads require upgrade.enabled=true, upgrade.migratedOperationId acknowledging completed data migration, or upgrade.freshInstall=true for empty datastores" }}{{- end }}
+{{- if and .Values.upgrade.recheck.enabled (or (empty .Values.upgrade.migratedOperationId) (ne .Values.upgrade.migratedOperationId .Values.upgrade.operationId)) }}{{ fail "Recheck requires upgrade.migratedOperationId matching upgrade.operationId; containment alone does not prove completed migration" }}{{- end }}
+{{- end }}
 {{- if or .Values.upgrade.enabled .Values.upgrade.report.enabled .Values.upgrade.recheck.enabled }}
 {{- if ne .Release.Namespace "novu" }}{{ fail "Upgrade hooks are scoped to namespace novu" }}{{- end }}
 {{- if ne (include "novu.fullname" .) "novu" }}{{ fail "Upgrade hooks require release fullname novu to match L1 RBAC" }}{{- end }}
@@ -12,8 +16,11 @@
 {{- $operation := required "upgrade.operationId is required" .Values.upgrade.operationId }}
 {{- $attempt := required "upgrade.attemptId is required" .Values.upgrade.attemptId }}
 {{- $revision := required "upgrade.syncRevision is a full reviewed Argo source SHA" .Values.upgrade.syncRevision }}
+{{- $deployEnv := required "upgrade.deployEnv is required" .Values.upgrade.deployEnv }}
+{{- $bucket := required "upgrade.bucket is required" .Values.upgrade.bucket }}
 {{- $steps := list }}
-{{- range $key, $value := .Values.upgrade.smoke }}
+{{- range $key := list "subscriberId" "applicationIdentifier" "apiKeySecretName" "apiKeySecretKey" }}
+{{- $value := index $.Values.upgrade.smoke $key }}
 {{- if or (empty $value) (regexMatch "^(SMOKE_|REPLACE_)" $value) }}{{ fail (printf "upgrade.smoke.%s requires a resolved smoke input" $key) }}{{- end }}
 {{- end }}
 {{- with .Values.upgrade.recheck.previousApiKeySecretName }}
@@ -56,7 +63,7 @@ metadata:
   namespace: {{ $.Release.Namespace }}
   labels:
     {{- include "novu.labels" $ | nindent 4 }}
-    tags.datadoghq.com/env: staging
+    tags.datadoghq.com/env: {{ $deployEnv | quote }}
     tags.datadoghq.com/service: novu-upgrade
   {{- if $step.phase }}
   annotations:
@@ -73,7 +80,7 @@ spec:
   template:
     metadata:
       labels:
-        tags.datadoghq.com/env: staging
+        tags.datadoghq.com/env: {{ $deployEnv | quote }}
         tags.datadoghq.com/service: novu-upgrade
       annotations:
         ad.datadoghq.com/runner.logs: '[{"source":"nodejs","service":"novu-upgrade"}]'
@@ -115,8 +122,12 @@ spec:
               value: {{ $revision | quote }}
             - name: RUNNER_IMAGE
               value: {{ $image | quote }}
+            - name: DEPLOY_ENV
+              value: {{ $deployEnv | quote }}
+            - name: MIN_WORKFLOWS
+              value: {{ $.Values.upgrade.smoke.minWorkflows | int64 | quote }}
             - name: BACKUP_BUCKET
-              value: {{ $.Values.upgrade.bucket | quote }}
+              value: {{ $bucket | quote }}
             - name: STATE_CONFIGMAP
               value: {{ $.Values.upgrade.operationStateName | quote }}
             - name: MODE

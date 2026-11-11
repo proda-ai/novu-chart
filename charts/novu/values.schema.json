@@ -439,6 +439,8 @@
       "additionalProperties": false,
       "required": [
         "enabled",
+        "migratedOperationId",
+        "freshInstall",
         "centralize",
         "report",
         "image",
@@ -454,11 +456,21 @@
         "smoke",
         "workVolumeSize",
         "indexDrops",
-        "recheck"
+        "recheck",
+        "deployEnv"
       ],
       "properties": {
         "enabled": {
           "type": "boolean"
+        },
+        "migratedOperationId": {
+          "type": "string",
+          "pattern": "^$|^[a-z0-9][a-z0-9-]{0,47}$",
+          "description": "Acknowledges completed data migration by this operation; smoke may still need recheck."
+        },
+        "freshInstall": {
+          "type": "boolean",
+          "description": "Acknowledges empty Mongo and Redis stores with no existing Novu data; never use for an upgrade or recheck."
         },
         "centralize": {
           "type": "object",
@@ -509,7 +521,9 @@
           "pattern": "^$|^\\S+@sha256:[a-f0-9]{64}$"
         },
         "bucket": {
-          "const": "proda-staging-636c0f80-novu-upgrade"
+          "type": "string",
+          "pattern": "^$|^[a-z0-9][a-z0-9-]*-novu-upgrade$",
+          "maxLength": 63
         },
         "serviceAccountName": {
           "const": "novu-upgrade"
@@ -656,7 +670,9 @@
             "subscriberId",
             "applicationIdentifier",
             "apiKeySecretName",
-            "apiKeySecretKey"
+            "apiKeySecretKey",
+            "minWorkflows",
+            "noConsumersApproved"
           ],
           "properties": {
             "subscriberId": {
@@ -670,6 +686,15 @@
             },
             "apiKeySecretKey": {
               "type": "string"
+            },
+            "minWorkflows": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "noConsumersApproved": {
+              "type": "boolean",
+              "description": "US production only: reviewed consumer inventory approves zero workflows; health and HMAC session checks remain required."
             }
           }
         },
@@ -680,8 +705,215 @@
             "type": "string",
             "pattern": "^[a-f0-9]{24}$"
           }
+        },
+        "deployEnv": {
+          "type": "string",
+          "enum": [
+            "",
+            "staging",
+            "production",
+            "us-production"
+          ]
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "anyOf": [
+              {
+                "properties": {
+                  "enabled": {
+                    "const": true
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "report": {
+                    "properties": {
+                      "enabled": {
+                        "const": true
+                      }
+                    }
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "recheck": {
+                    "properties": {
+                      "enabled": {
+                        "const": true
+                      }
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "then": {
+            "properties": {
+              "bucket": {
+                "minLength": 1
+              },
+              "deployEnv": {
+                "minLength": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "deployEnv": {
+                "const": "staging"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "bucket": {
+                "enum": [
+                  "proda-staging-636c0f80-novu-upgrade"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "deployEnv": {
+                "const": "production"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "bucket": {
+                "enum": [
+                  "proda-production-1d97bb62-novu-upgrade"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "deployEnv": {
+                "const": "us-production"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "bucket": {
+                "enum": [
+                  "proda-production-us-novu-upgrade"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "freshInstall": {
+                "const": true
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "migratedOperationId": {
+                "const": ""
+              },
+              "recheck": {
+                "properties": {
+                  "enabled": {
+                    "const": false
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "deployEnv": {
+                "const": "production"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "smoke": {
+                "properties": {
+                  "minWorkflows": {
+                    "minimum": 1
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "deployEnv": {
+                "const": "us-production"
+              },
+              "smoke": {
+                "properties": {
+                  "noConsumersApproved": {
+                    "const": false
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "smoke": {
+                "properties": {
+                  "minWorkflows": {
+                    "minimum": 1
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "smoke": {
+                "properties": {
+                  "noConsumersApproved": {
+                    "const": true
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "deployEnv": {
+                "const": "us-production"
+              },
+              "smoke": {
+                "properties": {
+                  "minWorkflows": {
+                    "const": 0
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
     }
   },
   "additionalProperties": false,

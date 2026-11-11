@@ -26,8 +26,28 @@ try {
   const unpack = spawnSync('tar', ['-x', '-C', scratch], { input: archive.stdout });
   assert.equal(unpack.status, 0);
   cpSync('charts/novu/charts', join(scratch, 'charts/novu/charts'), { recursive: true });
-  assert.equal(render('charts/novu'), render(join(scratch, 'charts/novu')), 'Disabled render must equal PR #5 byte for byte');
-  const enabled = ['--set', 'upgrade.enabled=true', '--set', 'global.env.mongodb.autoCreateIndexes=false', '--set-string', `upgrade.image=example.invalid/runner@sha256:${'a'.repeat(64)}`, '--set-string', 'upgrade.operationId=eu-staging-upgrade', '--set-string', 'upgrade.attemptId=rehearsal-one', '--set-string', `upgrade.syncRevision=${'b'.repeat(40)}`, '--set-string', 'upgrade.smoke.subscriberId=fixture-subscriber', '--set-string', 'upgrade.smoke.applicationIdentifier=fixture-application', '--set-string', 'upgrade.smoke.apiKeySecretName=fixture-smoke'];
+  const migrated = ['--set-string', 'upgrade.migratedOperationId=eu-staging-upgrade'];
+  const freshInstall = ['--set', 'upgrade.freshInstall=true'];
+  const baseline = render(join(scratch, 'charts/novu'));
+  assert.equal(render('charts/novu', migrated), baseline, 'Acknowledged migrated render must equal PR #5 byte for byte');
+  assert.equal(render('charts/novu', freshInstall), baseline, 'Acknowledged fresh install must preserve workloads');
+  const reject = (values: string[], message?: RegExp) => {
+    const result = spawnSync('helm', ['template', 'novu', 'charts/novu', '-n', 'novu', '-f', fixture, ...values], { encoding: 'utf8' });
+    assert.notEqual(result.status, 0, `Expected render rejection: ${values.join(' ')}`);
+    if (message) assert.match(result.stderr, message);
+  };
+  reject([], /Novu 3.x workloads require/);
+  for (const invalid of [
+    ['--set-string', 'upgrade.migratedOperationId='],
+    ['--set-string', 'upgrade.migratedOperationId=REPLACE_OPERATION_ID'],
+    ['--set-string', 'upgrade.migratedOperationId= '],
+    ['--set', 'upgrade.migratedOperationId=null'],
+    ['--set', 'upgrade.migratedOperationId=true'],
+    ['--set', 'upgrade.freshInstall=null'],
+    ['--set-string', 'upgrade.freshInstall=true'],
+    [...migrated, ...freshInstall],
+  ]) reject(invalid);
+  const enabled = ['--set-string', 'upgrade.deployEnv=staging', '--set-string', 'upgrade.bucket=proda-staging-636c0f80-novu-upgrade', '--set', 'upgrade.enabled=true', '--set', 'global.env.mongodb.autoCreateIndexes=false', '--set-string', `upgrade.image=example.invalid/runner@sha256:${'a'.repeat(64)}`, '--set-string', 'upgrade.operationId=eu-staging-upgrade', '--set-string', 'upgrade.attemptId=rehearsal-one', '--set-string', `upgrade.syncRevision=${'b'.repeat(40)}`, '--set-string', 'upgrade.smoke.subscriberId=fixture-subscriber', '--set-string', 'upgrade.smoke.applicationIdentifier=fixture-application', '--set-string', 'upgrade.smoke.apiKeySecretName=fixture-smoke'];
   const parse = (output: string) => output.split(/^---\s*$/m).map((document) => Bun.YAML.parse(document) as any).filter(Boolean);
   const ingressValues = ['--set', 'ingress.enabled=true', '--set', 'ingress.host=example.test', '--set', 'ingress.tls.secretName=novu-tls'];
   for (const [subdomain, extra, secretName] of [
@@ -35,7 +55,7 @@ try {
     ['web', ['--set', 'ingress.dashboard.subdomain=web'], 'web.novu-tls'],
     ['web', ['--set', 'ingress.dashboard.subdomain=web', '--set', 'ingress.dashboard.tls.secretName=custom-tls'], 'custom-tls'],
   ] as const) {
-    const ingresses = parse(render('charts/novu', [...ingressValues, ...extra])).filter((item) => item.kind === 'Ingress');
+    const ingresses = parse(render('charts/novu', [...migrated, ...ingressValues, ...extra])).filter((item) => item.kind === 'Ingress');
     const dashboard = ingresses.find((item) => item.metadata.name === 'novu-dashboard');
     assert.deepEqual(dashboard.spec.rules.map((rule: any) => rule.host), [`${subdomain}.example.test`]);
     assert.deepEqual(dashboard.spec.tls, [{ hosts: [`${subdomain}.example.test`], secretName }]);
@@ -47,6 +67,71 @@ try {
     ]);
   }
   const upgradeJobs = (objects: any[]) => objects.filter((item) => item.kind === 'Job' && item.metadata.name.startsWith('novu-upgrade-'));
+  for (const minimum of [0, 7, 1000000, Number.MAX_SAFE_INTEGER]) {
+    const valuesObject = { upgrade: { smoke: { minWorkflows: minimum } } };
+    for (const [format, contents] of [
+      ['yaml', `upgrade:\n  smoke:\n    minWorkflows: ${minimum}\n`],
+      ['json', JSON.stringify(valuesObject)],
+    ]) {
+      const valuesFile = join(scratch, `minimum.${format}`);
+      writeFileSync(valuesFile, contents);
+      const rendered = upgradeJobs(parse(render('charts/novu', [...enabled, '-f', valuesFile])));
+      assert.ok(rendered.length);
+      for (const job of rendered) {
+        const env: EnvVar[] = job.spec.template.spec.containers[0].env;
+        assert.equal(env.find((item) => item.name === 'MIN_WORKFLOWS')?.value, String(minimum), `${format}: ${minimum}`);
+      }
+    }
+  }
+  for (const [deployEnv, bucket] of [
+    ['staging', 'proda-staging-636c0f80-novu-upgrade'],
+    ['production', 'proda-production-1d97bb62-novu-upgrade'],
+    ['us-production', 'proda-production-us-novu-upgrade'],
+  ]) {
+    for (const mode of ['upgrade', 'report', 'recheck']) {
+      const minimum = deployEnv === 'staging' ? 0 : 1;
+      const values = [...enabled, '--set-string', `upgrade.deployEnv=${deployEnv}`, '--set-string', `upgrade.bucket=${bucket}`, '--set', `upgrade.smoke.minWorkflows=${minimum}`,
+        ...(mode === 'upgrade' ? [] : ['--set', 'upgrade.enabled=false', '--set', `upgrade.${mode}.enabled=true`]),
+        ...(mode === 'recheck' ? migrated : []),
+        ...(mode === 'report' ? ['--set', 'mongodb.enabled=false', '--set', 'redis.enabled=false'] : [])];
+      const regional = upgradeJobs(parse(render('charts/novu', values)));
+      assert.ok(regional.length);
+      for (const job of regional) {
+        for (const metadata of [job.metadata, job.spec.template.metadata]) assert.equal(metadata.labels['tags.datadoghq.com/env'], deployEnv);
+        const env: EnvVar[] = job.spec.template.spec.containers[0].env;
+        assert.equal(env.find((item) => item.name === 'DEPLOY_ENV')?.value, deployEnv);
+        assert.equal(env.find((item) => item.name === 'BACKUP_BUCKET')?.value, bucket);
+        assert.equal(env.find((item) => item.name === 'MIN_WORKFLOWS')?.value, String(minimum));
+      }
+      const noWorkflows = [...values, '--set', 'upgrade.smoke.minWorkflows=0'];
+      if (deployEnv !== 'staging') reject(noWorkflows, /minWorkflows/);
+      const exception = [...noWorkflows, '--set', 'upgrade.smoke.noConsumersApproved=true'];
+      if (deployEnv === 'us-production') {
+        const exceptionJobs = upgradeJobs(parse(render('charts/novu', exception)));
+        assert.ok(exceptionJobs.length);
+        for (const job of exceptionJobs) {
+          const env: EnvVar[] = job.spec.template.spec.containers[0].env;
+          assert.equal(env.find((item) => item.name === 'MIN_WORKFLOWS')?.value, '0');
+        }
+        reject([...exception, '--set', 'upgrade.smoke.minWorkflows=1']);
+      } else {
+        reject(exception);
+      }
+      for (const invalid of [
+        ['--set-string', 'upgrade.deployEnv='], ['--set', 'upgrade.deployEnv=null'],
+        ['--set-string', 'upgrade.deployEnv=unknown'], ['--set-string', 'upgrade.bucket='],
+        ['--set', 'upgrade.bucket=null'], ['--set-string', 'upgrade.bucket=invalid_bucket'],
+        ['--set-string', `upgrade.bucket=${deployEnv === 'staging' ? 'proda-production-us-novu-upgrade' : 'proda-staging-636c0f80-novu-upgrade'}`],
+        ['--set', 'upgrade.smoke.minWorkflows=-1'], ['--set', 'upgrade.smoke.minWorkflows=1.5'],
+        ['--set-string', 'upgrade.smoke.minWorkflows=0'], ['--set', 'upgrade.smoke.minWorkflows=null'],
+      ]) {
+        const key = invalid[1].split('=')[0];
+        const overrides = values.filter((value, index) => !value.startsWith(`${key}=`) && !(value.startsWith('--set') && values[index + 1]?.startsWith(`${key}=`)));
+        const rejected = spawnSync('helm', ['template', 'novu', 'charts/novu', '-n', 'novu', '-f', fixture, ...overrides, ...invalid], { encoding: 'utf8' });
+        assert.notEqual(rejected.status, 0, `${mode}/${deployEnv}: ${invalid.join(' ')}`);
+      }
+    }
+  }
   const disabledJobs = upgradeJobs(parse(render('charts/novu', [...enabled, '--set', 'upgrade.centralize.approved=false', '--set', 'upgrade.report.enabled=false'])));
   assert.equal(disabledJobs.length, 8);
   assert.ok(disabledJobs.every((job) => !['novu-upgrade-centralize', 'novu-upgrade-report'].includes(job.metadata.name)));
@@ -54,6 +139,20 @@ try {
   const objects = parse(render('charts/novu', approved));
   const jobs = objects.filter((item) => item.kind === 'Job' && item.metadata.name.startsWith('novu-upgrade-'));
   assert.equal(jobs.length, 9);
+  const base = join(scratch, 'smoke-first');
+  const baseArchive = spawnSync('git', ['archive', '8d0e395c514bcd089b58ef785b8cae0bc7263a6e', 'charts/novu'], { maxBuffer: 20 * 1024 * 1024 });
+  assert.equal(baseArchive.status, 0);
+  run('mkdir', ['-p', base]);
+  assert.equal(spawnSync('tar', ['-x', '-C', base], { input: baseArchive.stdout }).status, 0);
+  cpSync('charts/novu/charts', join(base, 'charts/novu/charts'), { recursive: true });
+  const baseValues = approved.filter((value, index) => !value.startsWith('upgrade.deployEnv=') && !(value === '--set-string' && approved[index + 1]?.startsWith('upgrade.deployEnv=')));
+  const baselineJobs = upgradeJobs(parse(render(join(base, 'charts/novu'), baseValues)));
+  const compatibleJobs = structuredClone(jobs);
+  for (const job of compatibleJobs) {
+    const env: EnvVar[] = job.spec.template.spec.containers[0].env;
+    job.spec.template.spec.containers[0].env = env.filter((item) => !['DEPLOY_ENV', 'MIN_WORKFLOWS'].includes(item.name));
+  }
+  assert.deepEqual(compatibleJobs, baselineJobs, 'Staging Jobs preserve smoke-first rendering apart from explicit regional/minimum inputs');
   const expected = [['quiesce', 'PreSync', '-60'], ['backup', 'PreSync', '-50'], ['verify', 'PreSync', '-40'], ['centralize', 'PreSync', '-35'], ['precheck', 'PreSync', '-30'], ['migrate', 'PreSync', '-20'], ['reconcile-indexes', 'PreSync', '-10'], ['smoke', 'PostSync', '10'], ['failure', 'SyncFail', '0']];
   for (const [step, phase, wave] of expected) {
     const job = jobs.find((item) => item.metadata.name === `novu-upgrade-${step}`);
@@ -75,6 +174,7 @@ try {
     }
     const container = pod.spec.containers[0];
     assert.deepEqual(container.args, [step]);
+    assert.equal(container.env.find((item: EnvVar) => item.name === 'MIN_WORKFLOWS')?.value, '7');
     assert.equal(container.env.find((item: any) => item.name === 'MODE').value, 'upgrade');
     assert.deepEqual(container.env.filter((item: any) => item.name === 'CENTRALIZE_APPROVED'), step === 'centralize' ? [{ name: 'CENTRALIZE_APPROVED', value: 'true' }] : []);
     assert.deepEqual(container.env.filter((item: EnvVar) => item.name.startsWith('SMOKE_')).map((item: EnvVar) => item.name), ['quiesce', 'smoke'].includes(step) ? ['SMOKE_SUBSCRIBER_ID', 'SMOKE_APPLICATION_IDENTIFIER', 'SMOKE_API_KEY'] : []);
@@ -116,10 +216,13 @@ try {
   reportPod.spec.containers[0].args = ['precheck'];
   reportPod.spec.containers[0].env.find((item: any) => item.name === 'MODE').value = 'report';
   assert.deepEqual(report.spec.template, reportPod);
-  const disarmed = [...approved, '--set', 'upgrade.enabled=false', '--set', 'upgrade.report.enabled=false'];
+  const disarmed = [...approved, ...migrated, '--set', 'upgrade.enabled=false', '--set', 'upgrade.report.enabled=false'];
   const disarmedObjects = parse(render('charts/novu', disarmed));
   assert.equal(disarmedObjects.filter((item) => item.kind === 'Job').length, 0);
   const recheckValues = [...disarmed, '--set', 'upgrade.recheck.enabled=true'];
+  reject([...recheckValues, '--set-string', 'upgrade.migratedOperationId='], /Novu 3.x workloads require/);
+  reject([...recheckValues, '--set-string', 'upgrade.migratedOperationId=another-operation'], /Recheck requires upgrade.migratedOperationId matching upgrade.operationId/);
+  reject([...recheckValues, '--set-string', 'upgrade.migratedOperationId=', ...freshInstall]);
   const recheckObjects = parse(render('charts/novu', recheckValues));
   const recheckJobs = recheckObjects.filter((item) => item.kind === 'Job');
   assert.equal(recheckJobs.length, 1);
@@ -180,6 +283,17 @@ try {
       assert.match(result.stderr, new RegExp(`upgrade.smoke.${key} requires a resolved smoke input`));
     }
   }
+  const runbook = readFileSync('docs/UPGRADE-3.19-RUNBOOK.md', 'utf8');
+  const reportGuidance = runbook.split('## Centralization findings')[1].split('\n## ')[0];
+  assert.match(reportGuidance, /status `findings` and exit code 3/);
+  assert.match(reportGuidance, /Inspect the immutable `report-\*\.json` evidence, including `credentials\.ok`/);
+  const recheckGuidance = runbook.split('## Recheck after a failed or missing smoke')[1].split('\n## ')[0];
+  assert.match(recheckGuidance, /`verification-failed` owner, a first recheck is also permitted when the smoke receipt is absent or still `running` without evidence or a result/);
+  assert.match(recheckGuidance, /quiesce receipt's `smokeTargetHash`/);
+  assert.match(runbook, /rejects the handoff unless explicitly given `ALLOW_UNPROVEN_SMOKE=true` \(default false\)/);
+  assert.match(runbook, /Sync failure before smoke[\s\S]*?use that first recheck path instead of R1/);
+  assert.ok(runbook.includes('](#recheck-after-a-failed-or-missing-smoke)'));
+  assert.doesNotMatch(runbook, /Findings and a failed credential check do not fail it|Use recheck only when smoke alone failed|Without matching proof, including a changed smoke key, quiesce proceeds|#recheck-after-a-failed-smoke\)/);
   const restoreBlocks = [...readFileSync('docs/R1-RESTORE.md', 'utf8').matchAll(/^```yaml\n([\s\S]*?)^```/gm)].map((match) => match[1]);
   for (const path of ['docs/R1-RESTORE.md', 'docs/UPGRADE-3.19-RUNBOOK.md']) {
     for (const [, block] of readFileSync(path, 'utf8').matchAll(/^```yaml\n([\s\S]*?)^```/gm)) {
@@ -195,6 +309,26 @@ try {
       if ('value' in env) assert.equal(typeof env.value, 'string', env.name);
     }
     assert.equal(job.spec.template.spec.containers[0].env.find((env: any) => env.name === 'BACKUP_GENERATION').value, '1730995200123456');
+  }
+  for (const [deployEnv, bucket] of [
+    ['staging', 'proda-staging-636c0f80-novu-upgrade'],
+    ['production', 'proda-production-1d97bb62-novu-upgrade'],
+    ['us-production', 'proda-production-us-novu-upgrade'],
+  ]) {
+    const resolved = parse(restoreYaml.replaceAll('REPLACE_DEPLOY_ENV', deployEnv)
+      .replaceAll('REPLACE_BACKUP_BUCKET', bucket).replaceAll('REPLACE_MONGO_PVC', `${deployEnv}-mongo-claim`)
+      .replaceAll('REPLACE_REDIS_PVC', `${deployEnv}-redis-claim`));
+    for (const job of resolved) {
+      for (const metadata of [job.metadata, job.spec.template.metadata]) assert.equal(metadata.labels['tags.datadoghq.com/env'], deployEnv);
+      const env: EnvVar[] = job.spec.template.spec.containers[0].env;
+      assert.equal(env.find((item) => item.name === 'DEPLOY_ENV')?.value, deployEnv);
+      assert.equal(env.find((item) => item.name === 'BACKUP_BUCKET')?.value, bucket);
+      assert.equal(env.find((item) => item.name === 'MIN_WORKFLOWS')?.value, '7');
+      if (job.spec.template.spec.containers[0].args[0] === 'restore') {
+        const volumes: { persistentVolumeClaim?: { claimName: string } }[] = job.spec.template.spec.volumes;
+        assert.deepEqual(volumes.flatMap((volume) => volume.persistentVolumeClaim ? [volume.persistentVolumeClaim.claimName] : []), [`${deployEnv}-mongo-claim`, `${deployEnv}-redis-claim`]);
+      }
+    }
   }
   const restoreExpected = [['quiesce', 'PreSync', '-60'], ['restore', 'PreSync', '-50'], ['smoke', 'PostSync', '10'], ['failure', 'SyncFail', '0']];
   const restoreEnv = restoreJobs[0].spec.template.spec.containers[0].env;
@@ -216,7 +350,7 @@ try {
       { name: 'SMOKE_API_KEY', valueFrom: { secretKeyRef: { name: 'novu-upgrade-smoke', key: 'api-key' } } },
     ] : []);
   }
-  console.log('PASS: dashboard subdomain defaults, web override and explicit TLS secret; API/WS ingress unchanged; disabled render equals #5; centralize/report opt-ins and standalone report with smoke credentials; quiesce carries the smoke credentials; standalone recheck preserves workloads and smoke wiring, optional previous smoke key, rejects armed hooks; enabled hooks, waves, identity, labels, deadlines and unsafe-input guards; R1 restore/validation/failure hooks and both docs YAML');
+  console.log('PASS: 3.x migration/fresh-install acknowledgements and matching recheck; production workflow minimum and explicit US exception; regional guards; acknowledged workloads equal #5; hook/report/recheck wiring; R1 and runbook YAML');
 } finally {
   rmSync(scratch, { recursive: true, force: true });
 }
